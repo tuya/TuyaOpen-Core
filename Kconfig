@@ -1,0 +1,45 @@
+# tuyaopen-core unified Kconfig entry
+#
+# Used as a submodule: the host project only needs to rsource this file from
+# its own Kconfig, for example
+#     rsource "third_party/tuyaopen-core/Kconfig"
+# (rsource paths are relative to this file's directory, so the host may place
+# it anywhere.)
+#
+# The generated .config looks like CONFIG_ENABLE_BLUETOOTH=y and can be passed
+# to this repository's CMake directly:
+#     cmake -DCONFIG_ENABLE_BLUETOOTH=y ...
+# TuyaOpenOptions.cmake normalizes y/1/on to ON.
+# Boolean switch defaults match the option() calls in cmake/TuyaOpenOptions.cmake.
+
+menu "tuyaopen-core"
+
+    rsource "third_party/Kconfig"
+    rsource "iot-core/Kconfig"
+    rsource "agent-core/Kconfig"
+    rsource "p2p-core/Kconfig"
+
+    # Connectivity layer switches
+    config ENABLE_WIRED
+        bool "ENABLE_WIRED: wired (Ethernet) support"
+        default n
+        help
+            Build the wired (Ethernet) support: the application-level
+            core_netif and the wired TKL implementation in port. Maps to
+            CONFIG_ENABLE_WIRED.
+
+    config ENABLE_BLUETOOTH
+        bool "ENABLE_BLUETOOTH: BLE support"
+        default n
+        help
+            Build the BlueZ based TKL BLE implementation in port (needs
+            glib/bluez/dbus at build time). Maps to CONFIG_ENABLE_BLUETOOTH.
+
+    config LITTLE_END
+        bool "LITTLE_END: target is little-endian"
+        default y
+        help
+            Target byte order, consumed by the pjproject port (mapped to
+            PJ_IS_LITTLE_ENDIAN). Leave on for the LINUX port.
+
+endmenu

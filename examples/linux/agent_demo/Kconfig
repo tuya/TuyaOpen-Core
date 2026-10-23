@@ -1,0 +1,65 @@
+# agent_demo configuration entry point.
+#
+# Each demo owns its Kconfig and its .config. Usage (requires kconfiglib:
+# pip3 install --user kconfiglib):
+#   cd tuyaopen-core/examples/linux/agent_demo
+#   KCONFIG_CONFIG=./.config menuconfig      # interactive configuration
+#   KCONFIG_CONFIG=./.config olddefconfig    # generate with defaults
+#
+# This demo's CMake reads ./.config automatically (CONFIG_xxx=y is normalized
+# to ON). Priority: -D command line > .config > built-in project defaults.
+mainmenu "tuyaopen-core linux agent_demo"
+
+# Unified core switch entry (symbols match the CMake options one-to-one)
+rsource "../../../Kconfig"
+
+# Application-layer common component switches (qrcode ships with the examples)
+rsource "../components/qrcode/Kconfig"
+
+menu "configure app (agent_demo)"
+
+    config AGENT_DEMO
+        bool
+        default y
+        select ENABLE_AI_COMPONENTS
+        select ENABLE_QRCODE
+        help
+            Build tuyaopen-core/examples/linux/agent_demo (full cloud AI agent link: a voice
+            upload as the trigger, downlink prints text only; no UI, downlink
+            audio not processed).
+            Default y: agent_demo is a standalone CMake project; this switch
+            only brings up the core switches required by the AI link
+            (ENABLE_AI_COMPONENTS / ENABLE_QRCODE) in the shared .config. This
+            symbol has no prompt (it cannot be toggled in menuconfig); simply
+            do not build this example and there is no need to disable it.
+
+            Note: this demo relies on ENABLE_QRCODE to output the binding QR
+            code (the only way to scan and activate an unactivated device). If
+            ENABLE_QRCODE is disabled in menuconfig or via -D, the build still
+            succeeds, but at runtime it stops at "Wait Tuya APP scan..." with
+            no QR code to scan and cannot be activated. The normal path does
+            not need to disable it.
+
+    config AGENT_DEMO_AUDIO_FILE
+        string "Audio source PCM file (empty = bundled voice_16k.pcm)"
+        depends on AGENT_DEMO
+        default ""
+        help
+            Uplink voice sample path (16kHz/16bit/mono PCM). Leave empty to use
+            the bundled sample (voice_16k.pcm in the build directory, copied
+            from assets/voice_16k.pcm); fill in a path to use that file.
+
+    # Application-side AI component switches (see src/components/):
+    # audio_player (ENABLE_AI_PLAYER plus decoder/resource sub-switches) → ai_audio
+    # (ENABLE_COMP_AI_AUDIO + alert source choice, selects ENABLE_AI_PLAYER).
+    # Symbol names/defaults match the original core definitions (existing .config
+    # and CMake -D usage is unaffected). No ENABLE_AI_COMPONENTS gate here:
+    # AGENT_DEMO (no prompt, default y) selects that symbol so it is always y,
+    # which makes an if-guard redundant.
+    # Note: ENABLE_COMP_AI_MCP is not listed here — the MCP server core lives in
+    # the core service layer (agent-core/svc_ai_mcp/) and its switch is defined
+    # together with that module.
+    rsource "src/components/audio_player/Kconfig"
+    rsource "src/components/ai_audio/Kconfig"
+
+endmenu

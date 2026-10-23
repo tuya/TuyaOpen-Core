@@ -1,0 +1,33 @@
+menuconfig ENABLE_COMP_AI_AUDIO
+    bool "enable ai audio playback orchestration"
+    default n
+    select ENABLE_AI_PLAYER
+    help
+        Enable the AI audio orchestration module (src/components/ai_audio):
+        TTS stream playback and music playlist playback on top of the
+        audio_player component (svc_ai_player interface). Selects
+        ENABLE_AI_PLAYER automatically.
+
+        The uplink audio path goes through the port contract instead (see
+        examples/agent_demo).
+
+if (ENABLE_COMP_AI_AUDIO)
+    choice AI_PLAYER_ALERT_SOURCE
+        prompt "select player alert source"
+        default AI_PLAYER_ALERT_SOURCE_LOCAL
+
+        config AI_PLAYER_ALERT_SOURCE_LOCAL
+            bool "use local alert source"
+            help
+                The local alert assets (media_src.h LOCAL_ALERT_SRC_*,
+                ~2MB) are not included in this tree; alerts are skipped
+                with a warning.
+
+        config AI_PLAYER_ALERT_SOURCE_CUSTOM
+            bool "use custom alert source"
+            help
+                The application registers its own alert callback via
+                ai_audio_player_reg_alert_cb().
+
+    endchoice
+endif

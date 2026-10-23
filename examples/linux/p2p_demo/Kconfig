@@ -1,0 +1,128 @@
+# p2p_demo configuration entry point.
+#
+# Each demo owns its Kconfig and its .config. Usage (requires kconfiglib:
+# pip3 install --user kconfiglib):
+#   cd tuyaopen-core/examples/linux/p2p_demo
+#   KCONFIG_CONFIG=./.config menuconfig      # interactive configuration
+#   KCONFIG_CONFIG=./.config olddefconfig    # generate with defaults
+#
+# This demo's CMake reads ./.config automatically (CONFIG_xxx=y is normalized
+# to ON). Priority: -D command line > .config > built-in project defaults.
+mainmenu "tuyaopen-core linux p2p_demo"
+
+# Unified core switch entry (symbols match the CMake options one-to-one)
+rsource "../../../Kconfig"
+
+# Application-layer common component switches (qrcode ships with the examples)
+rsource "../components/qrcode/Kconfig"
+
+menu "configure app (p2p_demo)"
+
+    config P2P_DEMO
+        bool
+        default y
+        select ENABLE_TUYA_P2P
+        select ENABLE_IPC_RING_BUFFER
+        help
+            Build tuyaopen-core/examples/linux/p2p_demo (virtual camera video source + P2P live
+            streaming). Default y: p2p_demo is a standalone CMake project, and this
+            switch only brings the core switches required by the P2P link
+            (ENABLE_TUYA_P2P / ENABLE_IPC_RING_BUFFER) into the shared .config.
+            This symbol has no prompt (it cannot be turned off interactively in
+            menuconfig); simply do not build this example instead of disabling it.
+
+    config P2P_DEMO_LOCAL_STORE
+        bool "Recording and calendar playback (local_store)"
+        depends on P2P_DEMO
+        default n
+        select ENABLE_LOCAL_STORE
+        help
+            Enable local recording and calendar playback (local_store). Default n:
+            the live streaming path does not depend on it; when enabled, the demo
+            writes encoded frames to ./media and answers the App's calendar
+            query/playback requests (on Linux it writes directly to a host
+            directory, with no SD card mount).
+
+    config P2P_DEMO_WIDTH
+        int "Capture width"
+        depends on P2P_DEMO
+        default 2304
+        help
+            Video width (pixels) reported to the App; it must match the video
+            source file (the bundled demo_video.264 is 2304x1296), otherwise the
+            reported AV capabilities do not match the actual stream.
+
+    config P2P_DEMO_HEIGHT
+        int "Capture height"
+        depends on P2P_DEMO
+        default 1296
+        help
+            Video height (pixels) reported to the App; it must match the video source file.
+
+    config P2P_DEMO_FPS
+        int "Capture fps"
+        depends on P2P_DEMO
+        default 15
+        help
+            Frame rate at which the virtual camera feeds frames (also the fps
+            reported to the App). The bundled demo_video.264 is 15fps; update this
+            when changing the video source.
+
+    config P2P_DEMO_KBPS
+        int "Target bitrate (kbps)"
+        depends on P2P_DEMO
+        default 960
+        help
+            Target bitrate (kbps) reported to the App. The video source is a
+            fixed-bitrate file and the source side does not take part in actual
+            rate control; this value only affects the AV capability report and the
+            App's image quality tier selection (the bundled video is about 960kbps).
+
+    config P2P_DEMO_GOP
+        int "GOP length (frames)"
+        depends on P2P_DEMO
+        default 60
+        help
+            GOP length (frames) reported to the App. The bundled video has a fixed
+            GOP of 60 frames (one IDR every 4 seconds), used by the App to estimate
+            the I-frame interval.
+
+    config P2P_DEMO_H264_FILE
+        string "Live video source file (empty = bundled demo_video.264)"
+        depends on P2P_DEMO
+        default ""
+        help
+            Live video source file path. Leave empty to use the bundled video
+            (demo_video.264 in the build directory, copied from
+            assets/demo_video.264); when set, use that Annex-B H.264 file (AU
+            boundaries are split on AUD or VCL; a stream without AUD also works).
+
+    config P2P_DEMO_LIVE_RECORD
+        bool "Live H264 record to local_store"
+        depends on P2P_DEMO_LOCAL_STORE
+        default n
+        help
+            Continuously write encoded frames to local_store during live streaming
+            (default n: recorded content is only read when the App requests
+            playback). When enabled, segments follow P2P_DEMO_RECORD_MAX_SEC.
+
+    config P2P_DEMO_RECORD_MAX_SEC
+        int "Max seconds per recording segment"
+        depends on P2P_DEMO_LIVE_RECORD
+        default 120
+        range 30 3600
+        help
+            Maximum duration of a single recording segment (seconds); the next
+            segment file is started when it expires. Default 120 seconds, range
+            30-3600.
+
+    config P2P_DEMO_PB_SEED
+        bool "Boot-time playback seed from the live source file"
+        depends on P2P_DEMO_LOCAL_STORE
+        default n
+        help
+            At startup, seed today's local_store index with the live source file so
+            the App can try calendar playback without any recording. Default n:
+            the normal path produces playable content through recording.
+
+endmenu

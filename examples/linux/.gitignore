@@ -1,0 +1,5 @@
+# menuconfig output (kconfiglib, generated in this directory)
+.config
+
+# Demo build directories (build/, build-xxx/)
+build*/

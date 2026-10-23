@@ -1,0 +1,12 @@
+menu "configure qrcode"
+
+    config ENABLE_QRCODE
+        bool "ENABLE_QRCODE: QR code output for Tuya APP binding"
+        default n
+        help
+            Build the qrcode module (qrcodegen + qrencode_print) in
+            examples/components/qrcode and activate the QR printing blocks in demos
+            (wired binding prints the pairing QR this way).
+            Maps to the CMake switch CONFIG_ENABLE_QRCODE.
+
+endmenu

@@ -1,0 +1,17 @@
+# iot_demo configuration entry point.
+#
+# Each demo owns its Kconfig and its .config. Usage (requires kconfiglib:
+# pip3 install --user kconfiglib):
+#   cd tuyaopen-core/examples/linux/iot_demo
+#   KCONFIG_CONFIG=./.config menuconfig      # interactive configuration
+#   KCONFIG_CONFIG=./.config olddefconfig    # generate with defaults
+#
+# This demo's CMake reads ./.config automatically (CONFIG_xxx=y is normalized
+# to ON). Priority: -D command line > .config > built-in project defaults.
+mainmenu "tuyaopen-core linux iot_demo"
+
+# Unified core switch entry (symbols match the CMake options one-to-one)
+rsource "../../../Kconfig"
+
+# Application-layer common component switches (qrcode ships with the examples)
+rsource "../components/qrcode/Kconfig"

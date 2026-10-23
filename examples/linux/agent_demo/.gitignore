@@ -1,0 +1,5 @@
+# Real credentials (copied from tuya_config_secrets.h.example) are not committed
+tuya_config_secrets.h
+# Build directory variants (build/ is already ignored by the linux/.gitignore
+# rule; this catches variants such as build-xxx)
+build*/

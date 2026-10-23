@@ -1,0 +1,47 @@
+# AI player switches (audio_player module).
+# Defaults match CONFIG_ENABLE_AI_PLAYER in
+# src/components/audio_player/CMakeLists.txt and the #ifndef fallbacks in
+# svc_ai_player.h.
+menuconfig ENABLE_AI_PLAYER
+    bool "ENABLE_AI_PLAYER: Enable AI player"
+    default n
+    help
+        Enable the AI audio player (MP3/WAV playback from memory, file or URL).
+        Platform audio output is injected by the port through
+        tuya_ai_player_set_consumer(); without it the built-in no-op consumer
+        is used (decoding still runs, PCM is discarded).
+
+    if (ENABLE_AI_PLAYER)
+        config AI_PLAYER_STACK_SIZE
+            int "AI_PLAYER_STACK_SIZE: player thread stack size"
+            default 5120
+        config AI_PLAYER_FRAMEBUF_SIZE
+            int "AI_PLAYER_FRAMEBUF_SIZE: player frame buf size"
+            default 4096
+        config AI_PLAYER_DECODEBUF_SIZE
+            int "AI_PLAYER_DECODEBUF_SIZE: player decode buf size"
+            default 8192
+        config AI_PLAYER_RINGBUF_SIZE
+            int "AI_PLAYER_RINGBUF_SIZE: player ring buf size"
+            default 16384
+        config AI_PLAYER_HTTP_YIELD_MS
+            int "AI_PLAYER_HTTP_YIELD_MS: player http yield ms"
+            range 1 100
+            default 10
+        config AI_PLAYER_HTTP_TIMEOUT_S
+            int "AI_PLAYER_HTTP_TIMEOUT_S: player http timeout seconds"
+            range 60 300
+            default 180
+        menu "Decoder Options"
+            # This tree has no libopus / libogg or decoder implementations;
+            # enabling these switches raises a CMake FATAL_ERROR (see
+            # CMakeLists.txt). The conditional structure is kept for later.
+            config ENABLE_AI_PLAYER_DECODER_OPUS
+                bool "ENABLE_AI_PLAYER_DECODER_OPUS: Enable OPUS decoder without any container (not available in this tree)"
+                default n
+            config ENABLE_AI_PLAYER_DECODER_OGGOPUS
+                depends on ENABLE_AI_PLAYER_DECODER_OPUS
+                bool "ENABLE_AI_PLAYER_DECODER_OGGOPUS: Enable OGGOPUS decoder (not available in this tree)"
+                default n
+        endmenu # Decoder Options
+    endif # ENABLE_AI_PLAYER
