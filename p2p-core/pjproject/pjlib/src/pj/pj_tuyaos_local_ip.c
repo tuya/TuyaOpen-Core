@@ -5,10 +5,9 @@
  * @version 1.2
  * @copyright Copyright (c) Tuya Inc.
  *
- * core_compat_get_sta_ipv4_nbo() reads the address with core_netif_get_ip()
- * when ENABLE_WIRED is set, parses the dotted string, and rejects loopback
- * and unspecified hosts. Without ENABLE_WIRED, or when no usable address is
- * available, it returns -1.
+ * core_compat_get_sta_ipv4_nbo() reads the address with core_netif_get_ip(),
+ * parses the dotted string, and rejects loopback and unspecified hosts.
+ * When no usable address is available, it returns -1.
  */
 #include "core_local_ip.h"
 #include "tuya_cloud_types.h"
@@ -17,9 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(ENABLE_WIRED) && (ENABLE_WIRED == 1)
 #include "core_netif.h"
-#endif
 
 /**
  * @brief Parse dotted IPv4 into network-byte-order u32
@@ -69,7 +66,7 @@ static int __reject_bad_host(uint32_t a)
 }
 
 /**
- * @brief Get station/wired IPv4 in network byte order via CORE
+ * @brief Get the local IPv4 in network byte order via core_netif
  * @param[out] addr_nbo IPv4 address (network byte order)
  * @return 0 on success, -1 on failure / unavailable / loopback
  */
@@ -84,17 +81,12 @@ int core_compat_get_sta_ipv4_nbo(unsigned int *addr_nbo)
 
     memset(&ip, 0, sizeof(ip));
 
-#if defined(ENABLE_WIRED) && (ENABLE_WIRED == 1)
-    memset(&ip, 0, sizeof(ip));
     if (core_netif_get_ip(&ip) == OPRT_OK && ip.ip[0] != '\0') {
         if (__parse_ipv4_nbo(ip.ip, &a) == 0 && __reject_bad_host(a) == 0) {
             *addr_nbo = (unsigned int)a;
             return 0;
         }
     }
-#endif
 
-    (void)ip;
-    (void)a;
     return -1;
 }

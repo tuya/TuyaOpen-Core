@@ -86,7 +86,7 @@ cmake -B build -DCONFIG_AGENT_DEMO_AUDIO_FILE=/path/to/your_16k.pcm
 ```
 
 注意：本 demo 自己目录下的 `.config` 会被其 CMake 读取；一旦存在即优先使用，
-删除后回到内置默认值（AI components / QRCODE / WIRED 打开）。
+删除后回到内置默认值（AI components / QRCODE 打开）。
 
 ## MCP 支持（云端工具调用）
 

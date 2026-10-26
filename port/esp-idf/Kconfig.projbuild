@@ -1,0 +1,4 @@
+config TUYAOPEN_CORE_ESP_IDF_PORT
+    bool
+    default y
+    select LITTLE_END

@@ -1,7 +1,6 @@
 # Boolean feature flags. Host may set these before add_subdirectory().
 # Values y/Y/yes/1/on and n/N/no/0/off are normalized after option().
 
-option(CONFIG_ENABLE_WIRED "Build wired netmgr sources (core_netif: local IP / link callback)" OFF)
 option(CONFIG_ENABLE_BLUETOOTH "Build core_bluetooth and BLE cloud sources" OFF)
 option(CONFIG_ENABLE_PLATFORM_MBEDTLS "Use platform mbedTLS instead of the bundled copy" OFF)
 option(CONFIG_ENABLE_DEVICE_TIMER "Include tuya_device_timer.c in tuya_cloud_service" OFF)
@@ -36,7 +35,6 @@ if(NOT DEFINED TUYAOPEN_PORT_DIR)
 endif()
 
 foreach(_tuyaopen_opt
-    CONFIG_ENABLE_WIRED
     CONFIG_ENABLE_BLUETOOTH
     CONFIG_ENABLE_PLATFORM_MBEDTLS
     CONFIG_ENABLE_DEVICE_TIMER

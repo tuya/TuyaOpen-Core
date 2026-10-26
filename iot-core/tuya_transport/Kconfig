@@ -1,7 +1,7 @@
-menu "configure mbedtls"
+menu "Configure mbedTLS"
 
     config ENABLE_PLATFORM_MBEDTLS
-        bool "ENABLE_PLATFORM_MBEDTLS: use mbedtls from the platform"
+        bool "ENABLE_PLATFORM_MBEDTLS: Use mbedTLS from the platform"
         default n
         help
             Use the mbedtls shipped by the platform instead of the copy
@@ -20,11 +20,11 @@ menu "configure mbedtls"
             log mechanism.
 
         config ENABLE_MBEDTLS_DEBUG_LEVEL
-            int "debug level set"
+            int "Debug level"
             range 0 5
             depends on ENABLE_MBEDTLS_DEBUG
             default 1
-  
+
     config ENABLE_MBEDTLS_SSL_MAX_CONTENT_LEN
             int "TLS maximum message content length"
             default 4096
@@ -47,33 +47,33 @@ menu "configure mbedtls"
 
                 If the value is set too low, symptoms are a failed TLS
                 handshake or a return value of MBEDTLS_ERR_SSL_INVALID_RECORD
-                (-0x7200). 
+                (-0x7200).
 
     menuconfig ENABLE_CUSTOM_CONFIG
-        bool "Enable user custom"
-        default n 
+        bool "Enable user custom configuration"
+        default n
 
-    if(ENABLE_CUSTOM_CONFIG)        
+    if(ENABLE_CUSTOM_CONFIG)
         config ENABLE_MBEDTLS_SSL_MAX_FRAGMENT_LENGTH
-            bool "Enable fragment"    
+            bool "Enable maximum fragment length negotiation"
             default n
-        
-            config ENABLE_MBEDTLS_CLIENT_SSL_SESSION_TICKETS        
-                bool "TLS: Client Support for RFC 5077 SSL session tickets"        
+
+            config ENABLE_MBEDTLS_CLIENT_SSL_SESSION_TICKETS
+                bool "TLS: Client Support for RFC 5077 SSL session tickets"
                 default n
                 help
                     Client support for RFC 5077 session tickets. See mbedTLS documentation for more details.
                     Disabling this option will save some code size.
-                        
+
             config ENABLE_MBEDTLS_HAVE_TIME
-                bool "Enable mbedtls time"
+                bool "Enable mbedTLS time"
                 default n
                 help
                     System has time.h and time().
                     The time does not need to be correct, only time differences are used.
 
             config ENABLE_MBEDTLS_HAVE_TIME_DATE
-                bool "Enable mbedtls certificate expiry check"
+                bool "Enable mbedTLS certificate expiry check"
                 depends on ENABLE_MBEDTLS_HAVE_TIME
                 default n
                 help
@@ -82,31 +82,31 @@ menu "configure mbedtls"
                     the date should be correct). This is used to verify the validity period of
                     X.509 certificates.
 
-                    It is suggested that you should get the real time by "SNTP".  
+                    It is suggested that you should get the real time by "SNTP".
 
             config ENABLE_MBEDTLS_FS_IO
-                bool "Enable mbedtls fs"
+                bool "Enable mbedTLS filesystem I/O"
                 default n
                 help
                     System has time.h and time().
                     The time does not need to be correct, only time differences are used.
 
             config ENABLE_MBEDTLS_NET_C
-                bool "Enable net"
+                bool "Enable network support"
                 default n
                 help
-                    Enable the NET.  
+                    Enable the NET.
 
             config ENABLE_MBEDTLS_HAVEGE_C
-                bool "Enable mbedtls havege"
+                bool "Enable mbedTLS HAVEGE"
                 default n
 
             config ENABLE_MBEDTLS_TIMING_C
-                bool "Enable mbedtls timing"
+                bool "Enable mbedTLS timing"
                 default n
 
             config ENABLE_MBEDTLS_ARC4_C
-                bool "Enable arc4"
+                bool "Enable ARC4"
                 default n
 
             menu "Hash Algorithms"
@@ -136,7 +136,7 @@ menu "configure mbedtls"
 
                 config ENABLE_MBEDTLS_CAMELLIA_C
                     bool "Camellia block cipher"
-                    default n            
+                    default n
 
                 config ENABLE_MBEDTLS_BLOWFISH_C
                     bool "Blowfish block cipher (read help)"
@@ -157,7 +157,7 @@ menu "configure mbedtls"
 
                 config ENABLE_MBEDTLS_CCM_C
                     bool "CCM (Counter with CBC-MAC) block cipher modes"
-                    default y                
+                    default y
                     help
                             Enable Counter with CBC-MAC (CCM) modes for AES and/or Camellia ciphers.
 
@@ -165,7 +165,7 @@ menu "configure mbedtls"
 
                 config ENABLE_MBEDTLS_GCM_C
                     bool "GCM (Galois/Counter) block cipher modes"
-                    default y                
+                    default y
                     help
                             Enable Galois/Counter Mode for AES and/or Camellia ciphers.
 
@@ -176,25 +176,25 @@ menu "configure mbedtls"
 
             menu "Asymmetric Ciphers"
                     config ENABLE_MBEDTLS_RSA_C
-                        bool "rsa"
+                        bool "RSA"
                         default n
-                
+
                     config ENABLE_MBEDTLS_GENPRIME
-                        bool "gen prime"
+                        bool "Generate prime numbers"
                         depends on ENABLE_MBEDTLS_RSA_C
                         default n
 
                     config ENABLE_MBEDTLS_DHM_C
-                        bool "dhm"
-                        default n            
+                        bool "Diffie-Hellman-Merkle key exchange"
+                        default n
 
                     config ENABLE_MBEDTLS_ECP_C
                         bool  "Elliptic Curve Ciphers"
                         default y
 
                     config ENABLE_MBEDTLS_PK_C
-                        bool "Enable the generic public (asymetric) key layer"
-                        depends on ENABLE_MBEDTLS_RSA_C || ENABLE_MBEDTLS_ECP_C                
+                        bool "Enable the generic public (asymmetric) key layer"
+                        depends on ENABLE_MBEDTLS_RSA_C || ENABLE_MBEDTLS_ECP_C
                         default n
 
                     config ENABLE_MBEDTLS_ECDH_C
@@ -301,7 +301,7 @@ menu "configure mbedtls"
                         default n
                         help
                             Enable support for CURVE448 Elliptic Curve.
-                            
+
                     config ENABLE_MBEDTLS_ECP_NIST_OPTIM
                         bool "NIST 'modulo p' optimisations"
                         depends on ENABLE_MBEDTLS_ECP_C
@@ -312,15 +312,15 @@ menu "configure mbedtls"
                             Disabling this option saves some code size.
 
                             # end of Elliptic Curve options
-                    
+
                     config ENABLE_MBEDTLS_ECP_RESTARTABLE
-                        bool "MBEDTLS_ECP_RESTARTABLE"
+                        bool "Enable ECP restartable operations"
                         depends on ENABLE_MBEDTLS_ECP_C
                         default n
 
             endmenu # Asymmetric Ciphers
 
-            menu "Certificates"    
+            menu "Certificates"
                     config ENABLE_MBEDTLS_X509_CRT
                         bool "Enable X.509 certificate"
                         depends on ENABLE_MBEDTLS_PK_C
@@ -363,33 +363,33 @@ menu "configure mbedtls"
                 endmenu # Certificates
 
             config ENABLE_MBEDTLS_CHACHA20_C
-                bool "Enable chacha20 algorithm"
+                bool "Enable ChaCha20 algorithm"
                 default n
                 help
-                    Enable the chacha20 algorithm. 
+                    Enable the chacha20 algorithm.
 
             config ENABLE_MBEDTLS_CHACHAPOLY_C
-                bool "Enable chachapoly algorithm"
+                bool "Enable ChaCha20-Poly1305 algorithm"
                 depends on ENABLE_MBEDTLS_CHACHA20_C
                 default n
                 help
-                    Enable the chacha20 algorithm. 
+                    Enable the chacha20 algorithm.
 
             config ENABLE_MBEDTLS_CMAC_C
                 bool "Enable CMAC mode for block ciphers"
                 default n
                 help
                     Enable the CMAC (Cipher-based Message Authentication Code) mode for
-                    block ciphers. 
+                    block ciphers.
 
             config ENABLE_MBEDTLS_HMAC_DRBG_C
-                bool "Enable hmac drbg"
+                bool "Enable HMAC-DRBG"
                 default n
                 help
                     Enable the HMAC_DRBG.
 
             config ENABLE_MBEDTLS_POLY1305_C
-                bool "Enable RIPEMD-1305 mac algorithm"
+                bool "Enable Poly1305 MAC algorithm"
                 default n
                 help
                     Enable the RIPEMD-160 hash algorithm.
@@ -431,33 +431,33 @@ menu "configure mbedtls"
                 bool
                 select ENABLE_MBEDTLS_TLS_ENABLED
             config ENABLE_MBEDTLS_TLS_ENABLED
-                bool        
+                bool
 
             config ENABLE_MBEDTLS_SSL_PROTO_TLS1
-                bool "Support TLS 1.0 protocol"        
+                bool "Support TLS 1.0 protocol"
                 default n
 
             config ENABLE_MBEDTLS_SSL_PROTO_TLS1_1
-                bool "Support TLS 1.1 protocol"        
+                bool "Support TLS 1.1 protocol"
                 default n
 
             config ENABLE_MBEDTLS_SSL_PROTO_TLS1_2
-                bool "Support TLS 1.2 protocol"        
+                bool "Support TLS 1.2 protocol"
                 default y
 
             config ENABLE_MBEDTLS_SSL_PROTO_DTLS
-                bool "Support dtls protocol"        
+                bool "Support DTLS protocol"
                 default n
 
             config ENABLE_MBEDTLS_SSL_DTLS_HELLO_VERIFY
-                bool "Enable dtls hello verify"
+                bool "Enable DTLS hello verify"
                 depends on ENABLE_MBEDTLS_SSL_PROTO_DTLS
                 default n
 
             config ENABLE_MBEDTLS_SSL_DTLS_SRTP
-                bool "Enable dtls srtp"
+                bool "Enable DTLS-SRTP"
                 depends on ENABLE_MBEDTLS_SSL_PROTO_DTLS
-                default n            
+                default n
 
             menu "TLS Key Exchange Methods"
                 config ENABLE_MBEDTLS_PSK_MODES
@@ -549,6 +549,6 @@ menu "configure mbedtls"
                     help
                         Enable to support ciphersuites with prefix TLS-ECDHE-RSA-WITH-
 
-            endmenu # TLS key exchange modes         
+            endmenu # TLS key exchange modes
         endif
 endmenu  # mbedTLS

@@ -42,7 +42,7 @@ Note: once a `.config` exists, it takes precedence (the built-in defaults are
 no longer used as a fallback). Delete `.config` to return to the built-in
 defaults. `.config` is not committed (.gitignore).
 
-Manual equivalent without menuconfig: `-DCONFIG_ENABLE_WIRED=ON`, or edit the
+Manual equivalent without menuconfig: `-DCONFIG_ENABLE_QRCODE=ON`, or edit the
 commented switches in
 `../../port/linux/include/common/tuya_kconfig.h` (`-D` takes priority).
 

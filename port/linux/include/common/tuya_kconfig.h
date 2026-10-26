@@ -2,7 +2,7 @@
  *
  * Three sections:
  *   1. Feature switches: undefined by default. Enable in one of two ways
- *      (-D wins): a) global macro: -DENABLE_WIRED=1 (only the ones needed)
+ *      (-D wins): a) global macro: -DENABLE_BLUETOOTH=1 (only the ones needed)
  *      b) uncomment the corresponding #define below
  *      Switch values must be consistent with the source files actually
  *      compiled, otherwise linking fails.
@@ -13,9 +13,6 @@
 #define TUYA_KCONFIG_H
 
 /* ==================== 1. Switches (off by default, enable as needed) ==================== */
-/* #ifndef ENABLE_WIRED
-#define ENABLE_WIRED 1
-#endif */
 /* #ifndef ENABLE_BLUETOOTH
 #define ENABLE_BLUETOOTH 1
 #endif */

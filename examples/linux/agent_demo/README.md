@@ -103,7 +103,7 @@ cmake -B build -DCONFIG_AGENT_DEMO_AUDIO_FILE=/path/to/your_16k.pcm
 
 Note that this demo's own `.config` (in its directory) is read by its CMake;
 once it exists it takes precedence. Delete it to return to the built-in
-defaults (AI components / QRCODE / WIRED on).
+defaults (AI components / QRCODE on).
 
 ## MCP support (cloud tool calls)
 

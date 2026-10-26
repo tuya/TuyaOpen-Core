@@ -131,7 +131,7 @@ static OPERATE_RET __set_link_cb(CORE_NETIF_LINK_CHANGE_CB cb)
     return tkl_wired_set_status_cb(__link_cb_shim);
 }
 
-#if !defined(__linux__) || (defined(ENABLE_WIRED) && (ENABLE_WIRED == 1))
+#if !defined(__linux__)
 CORE_NETIF_OPS_T core_netif_ops_platform = {
     .get_ip      = tkl_wired_get_ip,
     .set_link_cb = __set_link_cb,

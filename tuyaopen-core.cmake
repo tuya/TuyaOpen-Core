@@ -28,12 +28,11 @@ add_library(tuyaopen-headers INTERFACE)
 
 # Switches -> compile macros: only enabled ones are injected (source guards use
 # the defined() style, so OFF means not defined).
-# For manual builds (not using this CMake), the equivalent is -DENABLE_WIRED=1 ...
+# For manual builds (not using this CMake), the equivalent is -DENABLE_BLUETOOTH=1 ...
 # in the compile command, or uncommenting the matching #define in the port's
 # static tuya_kconfig.h.
 set(_tuyaopen_switch_defs)
 foreach(_tuyaopen_opt IN ITEMS
-    ENABLE_WIRED
     ENABLE_BLUETOOTH
     ENABLE_PLATFORM_MBEDTLS
     ENABLE_DEVICE_TIMER

@@ -5,63 +5,62 @@ rsource "core_system/Kconfig"
 # mbedtls configuration menu of the connection service layer (tuya_transport)
 rsource "tuya_transport/Kconfig"
 
-menu "configure tuya cloud service"
+menu "Configure Tuya IoT Service"
 
     config TUYA_SECURITY_LEVEL
         int
         range 0 3
         default 1
 
-        ---help---
-                0       /* security level 0,Applies to: Resource-constrained devices;Feature: Can only access Tuya Cloud */
-                1       /* security level 1,Applies to: Resource-constrained devices;Feature: One-way authentication */
-                2       /* security level 2,Applies to: Resource-rich equipment;Feature: Two-way authentication */
-                3       /* security level 3,Applies to: Resource-rich equipment;Feature: Two-way authentication,Devices use security chips to protect sensitive information */
+        help
+            0: Resource-constrained devices; can only access the Tuya Cloud.
+            1: Resource-constrained devices; one-way authentication.
+            2: Resource-rich devices; two-way authentication.
+            3: Resource-rich devices; two-way authentication with a security chip.
 
 
     config ENABLE_DEVICE_TIMER
-        bool "ENABLE_DEVICE_TIMER: enable tuya device timer(cloud scheduled task) function"
+        bool "ENABLE_DEVICE_TIMER: Enable Tuya device timer (cloud scheduled task) function"
         default n
 
-        ---help---
-                Device timer module: sync timer tasks from cloud(mqtt protocol 22),
-                persist them into kv, and execute the dps action when a timer fires.
+        help
+                Device timer module: sync timer tasks from the cloud (MQTT protocol 22),
+                persist them into KV, and execute the DP action when a timer fires.
                 Disable it to trim the code size if the device does not need cloud timers.
 
-    menuconfig  ENABLE_BT_SERVICE
-        bool "ENABLE_BT_SERVICE: enable tuya bt iot function"
+    menuconfig ENABLE_BT_SERVICE
+        bool "ENABLE_BT_SERVICE: Enable Tuya BT IoT function"
         default n
         depends on ENABLE_BLUETOOTH
 
         if (ENABLE_BT_SERVICE)
             config ENABLE_BT_NETCFG
-                bool "ENABLE_BT_NETCFG: enable tuya Bluetooth netconfig"
+                bool "ENABLE_BT_NETCFG: Enable Tuya Bluetooth netconfig"
                 default y
 
             config ENABLE_BT_CTRL
-                bool "ENABLE_BT_CTRL: enable tuya Bluetooth control"
+                bool "ENABLE_BT_CTRL: Enable Tuya Bluetooth control"
                 default y
 
             config BT_ADV_INTERVAL_MIN
-                int "BT_ADV_INTERVAL_MIN: tuya Bluetooth min adv interval,bet:ms"
+                int "BT_ADV_INTERVAL_MIN: Tuya Bluetooth minimum advertising interval (ms)"
                 range 10 2000
                 default 30
 
             config BT_ADV_INTERVAL_MAX
-                int "BT_ADV_INTERVAL_MAX: tuya Bluetooth max adv interval,bet:ms"
+                int "BT_ADV_INTERVAL_MAX: Tuya Bluetooth maximum advertising interval (ms)"
                 range 10 2000
                 default 60
-            
+
             config BT_REMOTE_CTRL_SCAN_INTERVAL
-                int "BT_REMOTE_CTRL_SCAN_INTERVAL: tuya Bluetooth remote control scan interval,bet:ms"
+                int "BT_REMOTE_CTRL_SCAN_INTERVAL: Tuya Bluetooth remote control scan interval (ms)"
                 range 10 2000
                 default 30
 
             config BT_REMOTE_CTRL_SCAN_WINDOWS
-                int "BT_REMOTE_CTRL_SCAN_WINDOWS: tuya Bluetooth remote control scan windows,bet:ms"
+                int "BT_REMOTE_CTRL_SCAN_WINDOWS: Tuya Bluetooth remote control scan window (ms)"
                 range 10 2000
                 default 10
 
         endif
 endmenu
-    

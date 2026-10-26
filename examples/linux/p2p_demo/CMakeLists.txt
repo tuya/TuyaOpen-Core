@@ -50,11 +50,8 @@ if(EXISTS "${TUYAOPEN_DOTCONFIG}")
 endif()
 unset(TUYAOPEN_DOTCONFIG)
 
-# Built-in defaults: switches required by the P2P link (wired demo, QR code used
+# Built-in defaults: switches required by the P2P link (QR code used
 # for scan-to-bind)
-if(NOT DEFINED CONFIG_ENABLE_WIRED)
-    set(CONFIG_ENABLE_WIRED ON)
-endif()
 if(NOT DEFINED CONFIG_ENABLE_QRCODE)
     set(CONFIG_ENABLE_QRCODE ON)
 endif()

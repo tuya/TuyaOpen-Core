@@ -1,6 +1,0 @@
-# Common layer switches: KV storage
-
-menu "third party"
-
-
-endmenu

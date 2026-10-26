@@ -1,26 +1,27 @@
-config ENABLE_AI_COMPONENTS
-    bool "enable ai components"
-    default n
-    help
-        Master switch for the tuya.ai service layer (tuya_ai_service: AI
-        protocol/transport, codec registry and the MCP server core).
-        Application-side components (agent / audio player / skills / MCP
-        tools) live with the application (see examples/agent_demo/components).
-        Leave off for projects that do not need it so it is not compiled in.
-        Maps to the CMake switch CONFIG_ENABLE_AI_COMPONENTS.
+menu "Configure Tuya AI Service"
 
-# Service layer (svc_* parameters) always participates in configuration.
-menu "configure tuya AI"
-
-    config ENABLE_AI_MONITOR
-        bool "enable ai monitor (tcp debug service)"
-        default y
+    config ENABLE_AI_COMPONENTS
+        bool "ENABLE_AI_COMPONENTS: Enable AI components"
+        default n
         help
-            AI protocol debug monitor service: listens on TCP (default port
-            5055) and dumps the AI protocol stream for link troubleshooting.
+            Master switch for the tuya.ai service layer (tuya_ai_service: AI
+            protocol/transport, codec registry and the MCP server core).
+            Application-side components (agent / audio player / skills / MCP
+            tools) live with the application (see examples/agent_demo/components).
+            Leave off for projects that do not need it so it is not compiled in.
+            Maps to the CMake switch CONFIG_ENABLE_AI_COMPONENTS.
 
-    rsource "svc_ai_basic/Kconfig"
-    # MCP server core (the tool set lives in the application and is gated
-    # by the same switch)
-    rsource "svc_ai_mcp/Kconfig"
+    if ENABLE_AI_COMPONENTS
+        config ENABLE_AI_MONITOR
+            bool "ENABLE_AI_MONITOR: Enable AI monitor (TCP debug service)"
+            default y
+            help
+                AI protocol debug monitor service: listens on TCP (default port
+                5055) and dumps the AI protocol stream for link troubleshooting.
+
+        rsource "svc_ai_basic/Kconfig"
+        # MCP server core (the tool set lives in the application and is gated
+        # by the same switch)
+        rsource "svc_ai_mcp/Kconfig"
+    endif # ENABLE_AI_COMPONENTS
 endmenu

@@ -39,7 +39,7 @@ menuconfig -> .config -> demo CMake -> tuyaopen-core.cmake 宏注入
 注意：`.config` 一旦存在即优先使用（内置默认值不再作为回退）。删除 `.config`
 即可回到内置默认值。`.config` 不提交（.gitignore）。
 
-不用 menuconfig 的等价做法：`-DCONFIG_ENABLE_WIRED=ON`，或修改
+不用 menuconfig 的等价做法：`-DCONFIG_ENABLE_QRCODE=ON`，或修改
 `../../port/linux/include/common/tuya_kconfig.h` 中注释掉的开关（`-D` 优先）。
 
 ## 更新 core 版本

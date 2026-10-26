@@ -9,7 +9,7 @@
  *         into ENABLE_*=1 and injected into tuyaopen-headers (core modules);
  *         the port target receives only ENABLE_BLUETOOTH (network no longer
  *         needs port-side switch macros);
- *      b) Compiler command line / IDE global macros: -DENABLE_WIRED=1 (pass
+ *      b) Compiler command line / IDE global macros: -DENABLE_BLUETOOTH=1 (pass
  *         only the ones to enable);
  *      c) Uncomment the corresponding #define below.
  *      Note: switch values must be consistent with the source files actually
@@ -22,10 +22,7 @@
 
 /* ==================== 1. Switches (all off by default, enable as needed) ==================== */
 /* Prefer sdkconfig (the tuyaopen-core menu in menuconfig); normally no need to
- * change anything here.
- * #ifndef ENABLE_WIRED
- * #define ENABLE_WIRED 1
- * #endif */
+ * change anything here. */
 /* #ifndef ENABLE_BLUETOOTH
 #define ENABLE_BLUETOOTH 1
 #endif */

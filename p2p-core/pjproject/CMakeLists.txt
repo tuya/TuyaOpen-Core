@@ -37,8 +37,8 @@ target_include_directories(pjproject PUBLIC ${_pj_incs})
 target_compile_options(pjproject PRIVATE -w)
 target_compile_definitions(pjproject PRIVATE ${_p2p_pj_defines})
 set(_pj_deps tuyaopen-headers core_system)
-# pj_tuyaos_local_ip.c includes core_netif.h under ENABLE_WIRED: core_netif is part
-# of iot-core/core_system (built into core_system; its headers propagate through the
+# pj_tuyaos_local_ip.c includes core_netif.h: core_netif is part of
+# iot-core/core_system (built into core_system; its headers propagate through the
 # PUBLIC include), so there is no separate core_netif target.
 target_link_libraries(pjproject PRIVATE ${_pj_deps})
 unset(_pj_deps)
