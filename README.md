@@ -38,6 +38,23 @@ flowchart TB
 | TuyaOpen / TuyaOS | Shared contracts and an operations adapter in [port/tuyaopen](port/tuyaopen). |
 | Other platforms | Add a port by implementing the platform contracts. |
 
+## Resource usage summary
+
+Measured on ESP32-S3 with `iot_demo` (BLE provisioning + MQTT + DP; P2P/AI
+disabled) and with per-allocation accounting on Linux:
+
+| Metric | Value | Basis |
+|---|---:|---|
+| Flash: core+port (excluding mbedtls/cJSON) | 140,272 B (≈137 KiB) | ESP32 ELF/map |
+| Flash: core+port + platform mbedtls/cJSON | 265,026 B (≈259 KiB) | ESP32 upper bound |
+| Static RAM: core+port (`.data+.bss`) | 2,043 B | ESP32 |
+| Dynamic: core itself (steady / peak) | 21,582 / 49,577 B (≈21 / 48 KiB) | Linux per-allocation, Linux-specific KV/littlefs excluded |
+| Dynamic: ESP32 total heap (steady / peak) | 237,448 / 250,748 B (≈232 / 245 KiB) | includes WiFi/BLE/platform mbedtls |
+
+- ESP32 total heap breakdown: WiFi driver ≈49 KB, BLE stack ≈72 KB, core cloud path ≈49 KB, thread stacks 27.6 KB.
+- Flash / static RAM figures come from the ESP32 build; Linux (x86-64) is only used for module attribution and its absolute values are not comparable.
+- Dynamic usage depends on the scenario (OTA, reconnect, P2P/AI will be higher).
+
 ## Get started
 
 Clone the repository and initialize its submodules:

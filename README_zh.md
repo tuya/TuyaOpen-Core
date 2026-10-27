@@ -38,6 +38,22 @@ flowchart TB
 | TuyaOpen / TuyaOS | 提供共享契约和操作适配器：[port/tuyaopen](port/tuyaopen)。 |
 | 其他平台 | 可通过实现平台契约新增端口。 |
 
+## 资源占用汇总
+
+数据取自 ESP32-S3 的 `iot_demo`（BLE 配网 + MQTT + DP，P2P/AI 未启用）和 Linux 侧逐笔统计：
+
+| 指标 | 数值 | 口径 |
+|---|---:|---|
+| Flash：core+port（不含 mbedtls/cJSON） | 140,272 B（≈137 KiB） | ESP32 ELF/map |
+| Flash：core+port + 平台 mbedtls/cJSON | 265,026 B（≈259 KiB） | ESP32 上限 |
+| 静态 RAM：core+port（`.data+.bss`） | 2,043 B | ESP32 |
+| 动态：core 自身（稳态 / 峰值） | 21,582 / 49,577 B（≈21 / 48 KiB） | Linux 逐笔，已扣除 Linux 特有 KV/littlefs |
+| 动态：ESP32 整机堆（稳态 / 峰值） | 237,448 / 250,748 B（≈232 / 245 KiB） | 含 WiFi/BLE/平台 mbedtls |
+
+- ESP32 整机堆构成：WiFi 驱动 ≈49 KB、BLE 栈 ≈72 KB、core 云路径 ≈49 KB、线程栈 27.6 KB。
+- Flash / 静态 RAM 以 ESP32 为准；Linux（x86-64）只用于模块归属，绝对值不可比。
+- 动态内存随场景变化（OTA、断线重连、P2P/AI 会更高）。
+
 ## 快速开始
 
 克隆仓库并初始化子模块：
