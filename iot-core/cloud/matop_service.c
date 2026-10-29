@@ -65,6 +65,7 @@ static int matop_service_data_receive_cb(void *context, const uint8_t *input, si
     /* result parse */
     bool success = false;
     cJSON *result = NULL;
+    int timestamp = 0;
 
     if (cJSON_GetObjectItem(data, "result")) {
         result = cJSON_GetObjectItem(data, "result");
@@ -72,9 +73,14 @@ static int matop_service_data_receive_cb(void *context, const uint8_t *input, si
         result = cJSON_GetObjectItem(result, "result");
     }
 
+    if (success) {
+        cJSON *t = cJSON_GetObjectItem(data, "t");
+        timestamp = cJSON_IsNumber(t) ? t->valueint : 0;
+    }
+
     atop_base_response_t response = {.success = success,
                                      .result = result,
-                                     .t = success ? cJSON_GetObjectItem(data, "t")->valueint : 0,
+                                     .t = timestamp,
                                      .user_data = target_message->user_data};
 
     if (target_message->notify_cb) {

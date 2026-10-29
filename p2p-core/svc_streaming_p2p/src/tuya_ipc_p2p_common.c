@@ -266,8 +266,9 @@ OPERATE_RET tuya_ipc_p2p_get_id(char p2p_id[])
     cJSON *p_child = NULL;
 
     p_child = cJSON_GetObjectItem(p_authjson, "p2pId");
-    if (p_child != NULL) {
-        strcpy(p2p_id, p_child->valuestring);
+    if (cJSON_IsString(p_child)) {
+        strncpy(p2p_id, p_child->valuestring, P2P_ID_LEN);
+        p2p_id[P2P_ID_LEN] = '\0';
     }
 
     cJSON_Delete(p_authjson);

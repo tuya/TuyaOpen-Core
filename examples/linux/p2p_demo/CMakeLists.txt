@@ -205,6 +205,7 @@ target_link_libraries(p2p_demo PRIVATE ${_p2p_demo_link})
 # demo_vcam selftest (standalone executable, links the same library group as p2p_demo)
 # demo_vcam.c is the implementation under test (the app target picks it up via GLOB);
 # include it explicitly here
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/selftest/demo_vcam_selftest.c")
 add_executable(vcam_selftest
     selftest/demo_vcam_selftest.c
     src/demo_vcam.c
@@ -218,11 +219,13 @@ target_include_directories(vcam_selftest PRIVATE
 # selftest would silently test the bundled video
 target_compile_definitions(vcam_selftest PRIVATE ${_p2p_demo_media_defs})
 target_link_libraries(vcam_selftest PRIVATE ${_p2p_demo_link})
+endif()
 
 # Media chain selftest (standalone executable, links the same library group as p2p_demo):
 # runs vcam -> frame validation/queue/ring buffer -> frame-fetch callback without cloud
 # or App. Does not include tuya_main.c/reset_netcfg.c (the selftest does not connect to
 # the cloud); the media implementation files are listed explicitly
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/selftest/media_chain_selftest.c")
 add_executable(media_chain_selftest
     selftest/media_chain_selftest.c
     src/tuya_ipc_demo.c
@@ -234,6 +237,7 @@ target_include_directories(media_chain_selftest PRIVATE
 )
 target_compile_definitions(media_chain_selftest PRIVATE ${_p2p_demo_media_defs})
 target_link_libraries(media_chain_selftest PRIVATE ${_p2p_demo_link})
+endif()
 unset(_p2p_demo_link)
 unset(_p2p_demo_media_defs)
 
@@ -248,10 +252,14 @@ if(ENABLE_ASAN)
     target_link_options(p2p_demo PRIVATE -fsanitize=address)
     # Also enabled for the selftests: the vcam buffer/index allocations are part of
     # the memory surface, so running them under ASAN is worthwhile
-    target_compile_options(vcam_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
-    target_link_options(vcam_selftest PRIVATE -fsanitize=address)
+    if(TARGET vcam_selftest)
+        target_compile_options(vcam_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+        target_link_options(vcam_selftest PRIVATE -fsanitize=address)
+    endif()
     # Same for the media chain selftest (frame pool/ring buffer copies are part of
     # the memory surface)
-    target_compile_options(media_chain_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
-    target_link_options(media_chain_selftest PRIVATE -fsanitize=address)
+    if(TARGET media_chain_selftest)
+        target_compile_options(media_chain_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+        target_link_options(media_chain_selftest PRIVATE -fsanitize=address)
+    endif()
 endif()

@@ -52,8 +52,9 @@ STATIC OPERATE_RET __ai_mq_do_interrupt(ty_cJSON *root)
     TUYA_CHECK_NULL_RETURN(cfg, OPRT_INVALID_PARM);
     ty_cJSON *eventId = ty_cJSON_GetObjectItem(root, "eventId");
     ty_cJSON *time = ty_cJSON_GetObjectItem(root, "time");
-    if (!eventId || !time || (strlen(eventId->valuestring) > AI_UUID_V4_LEN)) {
-        PR_ERR("eventId or time is null %d", eventId ? strlen(eventId->valuestring) : 0);
+    if (!eventId || !time || !ty_cJSON_IsString(eventId) ||
+        (strlen(eventId->valuestring) > AI_UUID_V4_LEN)) {
+        PR_ERR("eventId or time is null %d", ty_cJSON_IsString(eventId) ? strlen(eventId->valuestring) : 0);
         return OPRT_INVALID_PARM;
     }
     if (cfg->event_cb) {
@@ -254,7 +255,10 @@ STATIC OPERATE_RET __ai_mq_parse_ser_cfg(ty_cJSON *root)
     ty_cJSON *derivedAlgorithm = ty_cJSON_GetObjectItem(root, "derivedAlgorithm");
     ty_cJSON *derivedIv = ty_cJSON_GetObjectItem(root, "derivedIv");
     if (!tcpport || !username || !credential || !hosts || !expire || !clientId ||
-        !derivedAlgorithm || !derivedIv) {
+        !derivedAlgorithm || !derivedIv ||
+        !ty_cJSON_IsString(username) || !ty_cJSON_IsString(credential) ||
+        !ty_cJSON_IsString(clientId) || !ty_cJSON_IsString(derivedAlgorithm) ||
+        !ty_cJSON_IsString(derivedIv)) {
         PR_ERR("ai key vaule was null");
         return OPRT_CJSON_PARSE_ERR;
     }
@@ -275,6 +279,10 @@ STATIC OPERATE_RET __ai_mq_parse_ser_cfg(ty_cJSON *root)
     ai_mqtt_ctx->config.derived_algorithm = mm_strdup(derivedAlgorithm->valuestring);
     ai_mqtt_ctx->config.derived_iv = mm_strdup(derivedIv->valuestring);
     ai_mqtt_ctx->config.hosts = OS_MALLOC(ai_mqtt_ctx->config.host_num * SIZEOF(CHAR_T *));
+    if (ai_mqtt_ctx->config.hosts) {
+        /* Partial fills go through __ai_mq_ser_cfg_free: never free garbage. */
+        memset(ai_mqtt_ctx->config.hosts, 0, ai_mqtt_ctx->config.host_num * SIZEOF(CHAR_T *));
+    }
     if ((!ai_mqtt_ctx->config.hosts) || (!ai_mqtt_ctx->config.username) ||
         (!ai_mqtt_ctx->config.credential) || (!ai_mqtt_ctx->config.client_id) ||
         (!ai_mqtt_ctx->config.derived_algorithm) || (!ai_mqtt_ctx->config.derived_iv)) {
@@ -289,6 +297,11 @@ STATIC OPERATE_RET __ai_mq_parse_ser_cfg(ty_cJSON *root)
 
     for (idx = 0; idx < ai_mqtt_ctx->config.host_num; idx++) {
         ty_cJSON *host = ty_cJSON_GetArrayItem(hosts, idx);
+        if (!ty_cJSON_IsString(host)) {
+            PR_ERR("host[%d] is not string", idx);
+            rt = OPRT_CJSON_PARSE_ERR;
+            goto EXIT;
+        }
         ai_mqtt_ctx->config.hosts[idx] = mm_strdup(host->valuestring);
         AI_PROTO_D("host[%d]: %s", idx, ai_mqtt_ctx->config.hosts[idx]);
         if (!ai_mqtt_ctx->config.hosts[idx]) {
@@ -303,7 +316,8 @@ STATIC OPERATE_RET __ai_mq_parse_ser_cfg(ty_cJSON *root)
     ty_cJSON *tlsport = ty_cJSON_GetObjectItem(root, "ecc_tls_port");
     ty_cJSON *derived_client_id = ty_cJSON_GetObjectItem(root, "derived_client_id");
 
-    if (!tlsport || !domains || !expire || !derived_client_id) {
+    if (!tlsport || !domains || !expire || !derived_client_id ||
+        !ty_cJSON_IsString(derived_client_id)) {
         PR_ERR("ai key vaule was null");
         return OPRT_CJSON_PARSE_ERR;
     }
@@ -317,8 +331,15 @@ STATIC OPERATE_RET __ai_mq_parse_ser_cfg(ty_cJSON *root)
     ai_mqtt_ctx->config.expire = (UINT64_T)expire->valueint;
     ai_mqtt_ctx->config.derived_client_id = mm_strdup(derived_client_id->valuestring);
     ai_mqtt_ctx->config.domains = OS_MALLOC(ai_mqtt_ctx->config.domain_num * SIZEOF(CHAR_T *));
+    if (ai_mqtt_ctx->config.domains) {
+        /* Partial fills go through __ai_mq_ser_cfg_free: never free garbage. */
+        memset(ai_mqtt_ctx->config.domains, 0, ai_mqtt_ctx->config.domain_num * SIZEOF(CHAR_T *));
+    }
     if (ai_mqtt_ctx->config.host_num > 0) {
         ai_mqtt_ctx->config.hosts = OS_MALLOC(ai_mqtt_ctx->config.host_num * SIZEOF(CHAR_T *));
+        if (ai_mqtt_ctx->config.hosts) {
+            memset(ai_mqtt_ctx->config.hosts, 0, ai_mqtt_ctx->config.host_num * SIZEOF(CHAR_T *));
+        }
     }
     if ((!ai_mqtt_ctx->config.domains) || (!ai_mqtt_ctx->config.derived_client_id)) {
         PR_ERR("malloc err");
@@ -333,6 +354,11 @@ STATIC OPERATE_RET __ai_mq_parse_ser_cfg(ty_cJSON *root)
 
     for (idx = 0; idx < ai_mqtt_ctx->config.domain_num; idx++) {
         ty_cJSON *domain = ty_cJSON_GetArrayItem(domains, idx);
+        if (!ty_cJSON_IsString(domain)) {
+            PR_ERR("domain[%d] is not string", idx);
+            rt = OPRT_CJSON_PARSE_ERR;
+            goto EXIT;
+        }
         ai_mqtt_ctx->config.domains[idx] = mm_strdup(domain->valuestring);
         AI_PROTO_D("domain[%d]: %s", idx, ai_mqtt_ctx->config.domains[idx]);
         if (!ai_mqtt_ctx->config.domains[idx]) {
@@ -351,11 +377,13 @@ EXIT:
 
 STATIC BOOL_T __ai_mq_is_biz_id_vaild(ty_cJSON *bizId)
 {
-    if (bizId && memcmp(bizId->valuestring, ai_mqtt_ctx->biz_id, AI_UUID_V4_LEN) == 0) {
+    if (ty_cJSON_IsString(bizId) && strlen(bizId->valuestring) == AI_UUID_V4_LEN &&
+        memcmp(bizId->valuestring, ai_mqtt_ctx->biz_id, AI_UUID_V4_LEN) == 0) {
         memset(ai_mqtt_ctx->biz_id, 0, SIZEOF(ai_mqtt_ctx->biz_id));
         return TRUE;
     }
-    PR_ERR("bizId is not match, bizId:%s, ctx bizId:%s", bizId ? bizId->valuestring : "null", ai_mqtt_ctx->biz_id);
+    PR_ERR("bizId is not match, bizId:%s, ctx bizId:%s",
+           ty_cJSON_IsString(bizId) ? bizId->valuestring : "null", ai_mqtt_ctx->biz_id);
     return FALSE;
 }
 
@@ -370,7 +398,7 @@ STATIC OPERATE_RET __ai_mq_do_ser_cfg(ty_cJSON *root)
     if (success->type == ty_cJSON_False) {
         PR_ERR("success was false");
         errorCode = ty_cJSON_GetObjectItem(root, "errorCode");
-        if (errorCode && (strlen(errorCode->valuestring) > 0)) {
+        if (ty_cJSON_IsString(errorCode) && (strlen(errorCode->valuestring) > 0)) {
             PR_NOTICE("errorCode: %s", errorCode->valuestring);
         }
         return OPRT_CJSON_PARSE_ERR;
@@ -404,6 +432,10 @@ STATIC OPERATE_RET __ai_mq_parse_biz_cfg(ty_cJSON *root, BOOL_T is_send)
     for (idx = 0; idx < size; idx++) {
         ty_cJSON *item = ty_cJSON_GetArrayItem(root, idx);
         if (item) {
+            if (!ty_cJSON_IsString(item)) {
+                PR_ERR("send data type err");
+                return OPRT_CJSON_PARSE_ERR;
+            }
             if (strcmp(item->valuestring, "video") == 0) {
                 value[idx] = AI_PT_VIDEO;
             } else if (strcmp(item->valuestring, "audio") == 0) {
@@ -429,7 +461,7 @@ STATIC OPERATE_RET __ai_mq_parse_agent_token(ty_cJSON *root)
     ty_cJSON *token = NULL, *biz_cfg = NULL;
     token = ty_cJSON_GetObjectItem(root, "agentToken");
     biz_cfg = ty_cJSON_GetObjectItem(root, "bizConfig");
-    if (!token || !biz_cfg) {
+    if (!ty_cJSON_IsString(token) || !biz_cfg) {
         PR_ERR("agent token info was null");
         return OPRT_CJSON_PARSE_ERR;
     }
@@ -469,11 +501,11 @@ STATIC OPERATE_RET __ai_mq_do_agent_token(ty_cJSON *root)
     if (success->type == ty_cJSON_False) {
         PR_ERR("success was false");
         errorCode = ty_cJSON_GetObjectItem(root, "errorCode");
-        if (errorCode && (strlen(errorCode->valuestring) > 0)) {
+        if (ty_cJSON_IsString(errorCode) && (strlen(errorCode->valuestring) > 0)) {
             PR_NOTICE("errorCode: %s", errorCode->valuestring);
         }
         ty_cJSON *tts_url = ty_cJSON_GetObjectItem(data, "ttsUrl");
-        if ((tts_url) && (strlen(tts_url->valuestring) > 0)) {
+        if (ty_cJSON_IsString(tts_url) && (strlen(tts_url->valuestring) > 0)) {
             if (strlen(tts_url->valuestring) >= AI_TTS_URL_LEN) {
                 PR_ERR("tts url too long, len:%d", strlen(tts_url->valuestring));
                 return OPRT_INVALID_PARM;
@@ -501,7 +533,7 @@ STATIC OPERATE_RET __ai_mq_handle(ty_cJSON *root)
     }
 
     biz_type = ty_cJSON_GetObjectItem(data, "bizType");
-    if ((biz_type == NULL) || strlen(biz_type->valuestring) == 0) {
+    if (!ty_cJSON_IsString(biz_type) || strlen(biz_type->valuestring) == 0) {
         PR_ERR("has no bizType");
         return OPRT_CJSON_PARSE_ERR;
     }
@@ -513,7 +545,7 @@ STATIC OPERATE_RET __ai_mq_handle(ty_cJSON *root)
             return OPRT_CJSON_PARSE_ERR;
         }
         type = ty_cJSON_GetObjectItem(data, "type");
-        if ((type == NULL) || (strlen(type->valuestring) == 0)) {
+        if (!ty_cJSON_IsString(type) || (strlen(type->valuestring) == 0)) {
             PR_ERR("has no type");
             return OPRT_CJSON_PARSE_ERR;
         }

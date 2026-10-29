@@ -345,13 +345,17 @@ int dp_data_recv_parse(dp_recv_msg_t *msg, dp_recv_cb_t dp_recv_cb)
     dp_schema_t *schema = dp_schema_find(msg->devid);
     cJSON *dps_js = cJSON_GetObjectItem(msg->data_js, "dps");
 
-    if (NULL == schema || NULL == dps_js) {
+    if (NULL == schema || !cJSON_IsObject(dps_js)) {
         PR_ERR("dev null or no dps");
         return OPRT_COM_ERROR;
     }
 
     core_mutex_lock(schema->mutex);
     for (item = dps_js->child; item != NULL; item = item->next) {
+        if (item->string == NULL) {
+            PR_ERR("DP ID is null");
+            continue;
+        }
         dpnode = dp_node_find(schema, atoi(item->string));
         if (dpnode == NULL) {
             PR_ERR("DP ID %d Invalid", atoi(item->string));
@@ -387,6 +391,9 @@ int dp_data_recv_parse(dp_recv_msg_t *msg, dp_recv_cb_t dp_recv_cb)
     int i = 0;
     core_mutex_lock(schema->mutex);
     for (item = dps_js->child; item != NULL; item = item->next) {
+        if (item->string == NULL) {
+            continue;
+        }
         dpnode = dp_node_find(schema, atoi(item->string));
         if (NULL == dpnode) {
             PR_ERR("DP ID %d Invalid", atoi(item->string));
@@ -1402,6 +1409,11 @@ static OPERATE_RET dp_node_parse(char *schema_json, dp_node_pos_t *nodepos, uint
             op_ret = OPRT_CJSON_GET_ERR;
             goto __exit;
         }
+        if (!cJSON_IsString(item)) {
+            PR_ERR("get mode invalid");
+            op_ret = OPRT_CJSON_GET_ERR;
+            goto __exit;
+        }
         if (!strcmp(item->valuestring, "rw")) {
             dp_desc->mode = M_RW;
         } else if (!strcmp(item->valuestring, "ro")) {
@@ -1420,14 +1432,10 @@ static OPERATE_RET dp_node_parse(char *schema_json, dp_node_pos_t *nodepos, uint
         }
         //! trigger
         item = cJSON_GetObjectItem(cjson, "trigger");
-        if (NULL == item) {
+        if (!cJSON_IsString(item) || !strcmp(item->valuestring, "pulse")) {
             dp_desc->trig = TRIG_PULSE;
         } else {
-            if (!strcmp(item->valuestring, "pulse")) {
-                dp_desc->trig = TRIG_PULSE;
-            } else {
-                dp_desc->trig = TRIG_DIRECT;
-            }
+            dp_desc->trig = TRIG_DIRECT;
         }
         // route
         item = cJSON_GetObjectItem(cjson, "route");
@@ -1448,17 +1456,19 @@ static OPERATE_RET dp_node_parse(char *schema_json, dp_node_pos_t *nodepos, uint
         item = cJSON_GetObjectItem(cjson, "stat");
         if (NULL == item) {
             dp_desc->stat = DST_NONE;
+        } else if (cJSON_IsString(item) && !strcmp(item->valuestring, "total")) {
+            dp_desc->stat = DST_TOTAL;
         } else {
-            if (!strcmp(item->valuestring, "total")) {
-                dp_desc->stat = DST_TOTAL;
-            } else {
-                dp_desc->stat = DST_INC;
-            }
+            dp_desc->stat = DST_INC;
         }
         // type
         item = cJSON_GetObjectItem(cjson, "type");
         if (NULL == item) {
             dp_desc->type = T_OBJ;
+        } else if (!cJSON_IsString(item)) {
+            PR_ERR("get type invalid");
+            op_ret = OPRT_CJSON_GET_ERR;
+            goto __exit;
         } else {
             if (!strcmp(item->valuestring, "obj")) {
                 dp_desc->type = T_OBJ;
@@ -1481,7 +1491,7 @@ static OPERATE_RET dp_node_parse(char *schema_json, dp_node_pos_t *nodepos, uint
         }
         cJSON *child;
         child = cJSON_GetObjectItem(item, "type");
-        if (NULL == child) {
+        if (!cJSON_IsString(child)) {
             PR_ERR("get type null");
             op_ret = OPRT_CJSON_GET_ERR;
             goto __exit;
@@ -1555,7 +1565,7 @@ static OPERATE_RET dp_node_parse(char *schema_json, dp_node_pos_t *nodepos, uint
             prop->prop_enum.cnt = num;
             for (i = 0; i < num; i++) {
                 cJSON *c_child = cJSON_GetArrayItem(child, i);
-                if (NULL == c_child) {
+                if (!cJSON_IsString(c_child)) {
                     PR_ERR("get array null");
                     op_ret = OPRT_CJSON_GET_ERR;
                     goto __exit;

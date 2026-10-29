@@ -389,16 +389,13 @@ static int __on_timer_sync_callback(cJSON *data, void *user_data)
     //     cJSON_free(sync_data_str);
     // }
 
-    if (cJSON_HasObjectItem(data, "reqId") == false) {
+    cJSON *req_id_item = cJSON_GetObjectItem(data, "reqId");
+    if (!cJSON_IsString(req_id_item)) {
         PR_ERR("req_id is null");
         return OPRT_INVALID_PARM;
     }
 
-    char *req_id = cJSON_GetObjectItem(data, "reqId")->valuestring;
-    if (req_id == NULL) {
-        PR_ERR("req_id is null");
-        return OPRT_INVALID_PARM;
-    }
+    char *req_id = req_id_item->valuestring;
 
     if (s_ctx.inited == false) {
         PR_ERR("Device timer not initialized");
@@ -413,9 +410,18 @@ static int __on_timer_sync_callback(cJSON *data, void *user_data)
         return OPRT_INVALID_PARM;
     }
 
-    int count = cJSON_GetObjectItem(inner_data, "count")->valueint;
-    int operateType = cJSON_GetObjectItem(inner_data, "operateType")->valueint;
-    char *task_id = cJSON_GetObjectItem(inner_data, "taskId")->valuestring;
+    cJSON *count_item = cJSON_GetObjectItem(inner_data, "count");
+    cJSON *operate_type_item = cJSON_GetObjectItem(inner_data, "operateType");
+    cJSON *task_id_item = cJSON_GetObjectItem(inner_data, "taskId");
+    if (!cJSON_IsNumber(count_item) || !cJSON_IsNumber(operate_type_item)) {
+        PR_ERR("timer sync param invalid");
+        __send_timer_sync_ack(req_id, ERR_OTHER);
+        return OPRT_INVALID_PARM;
+    }
+
+    int count = count_item->valueint;
+    int operateType = operate_type_item->valueint;
+    char *task_id = cJSON_IsString(task_id_item) ? task_id_item->valuestring : NULL;
 
     /* total: expected total timer count for full sync (may span multiple batches) */
     cJSON *jtotal = cJSON_GetObjectItem(inner_data, "total");

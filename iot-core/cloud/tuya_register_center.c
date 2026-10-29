@@ -254,7 +254,12 @@ static OPERATE_RET __rcs_restore(char *data, register_center_t *rcs)
     cJSON *p_code = cJSON_GetObjectItem(root, "code");
     cJSON *p_pub = cJSON_GetObjectItem(root, "pub");
     cJSON *p_url0 = cJSON_GetObjectItem(root, "url0");
-    if (!p_source || !p_pub || !p_url0) {
+    if (!p_source || !p_pub || !cJSON_IsString(p_url0)) {
+        rt = OPRT_CJSON_GET_ERR;
+        goto EXIT;
+    }
+
+    if (p_code && !cJSON_IsString(p_code)) {
         rt = OPRT_CJSON_GET_ERR;
         goto EXIT;
     }
@@ -262,7 +267,7 @@ static OPERATE_RET __rcs_restore(char *data, register_center_t *rcs)
 #if (TUYA_SECURITY_LEVEL != TUYA_SL_0)
     cJSON *p_urlx = cJSON_GetObjectItem(root, RCS_URLX(TUYA_SECURITY_LEVEL));
     cJSON *p_ca = cJSON_GetObjectItem(root, "ca");
-    if (!p_urlx || !p_ca) {
+    if (!cJSON_IsString(p_urlx) || !cJSON_IsString(p_ca)) {
         rt = OPRT_CJSON_GET_ERR;
         goto EXIT;
     }

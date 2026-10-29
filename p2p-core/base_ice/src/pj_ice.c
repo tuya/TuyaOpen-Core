@@ -412,10 +412,12 @@ bool pj_ice_session_create(pj_ice_session_cfg_t *pCfg, pj_ice_session_t **ppIceS
     pj_log_set_level(0);
 
     pj_ice_session_t *pIceSession = malloc(sizeof(pj_ice_session_t));
-    pIceSession->pPool = NULL;
-    pIceSession->pThread = NULL;
+    if (pIceSession == NULL) {
+        PJ_LOG(1, (THIS_FILE, "malloc ice session failed"));
+        return false;
+    }
+    memset(pIceSession, 0, sizeof(*pIceSession));
     pIceSession->bThreadQuitFlag = false;
-    pIceSession->pIceSTransport = NULL;
     pIceSession->bLastCand = false;
     pIceSession->bLocalGatherDone = PJ_FALSE;
     pIceSession->uComponentCount = 1;
@@ -423,7 +425,15 @@ bool pj_ice_session_create(pj_ice_session_cfg_t *pCfg, pj_ice_session_t **ppIceS
     pj_ice_strans_cfg_default(&pIceSession->iceCfg);
     pIceSession->iceCfg.stun_cfg.pf = &pIceSession->cachePool.factory;
     pIceSession->pPool = pj_pool_create(&pIceSession->cachePool.factory, "ice_Pool", 512, 512, NULL);
-    pj_timer_heap_create(pIceSession->pPool, 100, &pIceSession->iceCfg.stun_cfg.timer_heap);
+    if (pIceSession->pPool == NULL) {
+        PJ_LOG(1, (THIS_FILE, "create ice pool failed"));
+        goto create_fail;
+    }
+    if ((pj_timer_heap_create(pIceSession->pPool, 100, &pIceSession->iceCfg.stun_cfg.timer_heap) != PJ_SUCCESS) ||
+        (pIceSession->iceCfg.stun_cfg.timer_heap == NULL)) {
+        PJ_LOG(1, (THIS_FILE, "create ice timer heap failed"));
+        goto create_fail;
+    }
     /* Signaling thread schedules ICE timers; rtc_wrk polls them — must lock. */
     {
         pj_lock_t *timer_lock = NULL;
@@ -435,12 +445,20 @@ bool pj_ice_session_create(pj_ice_session_cfg_t *pCfg, pj_ice_session_t **ppIceS
             PJ_LOG(3, ("pj_ice", "ice timer lock create failed st=%d", lock_st));
         }
     }
-    pj_ioqueue_create(pIceSession->pPool, 16, &pIceSession->iceCfg.stun_cfg.ioqueue);
+    if ((pj_ioqueue_create(pIceSession->pPool, 16, &pIceSession->iceCfg.stun_cfg.ioqueue) != PJ_SUCCESS) ||
+        (pIceSession->iceCfg.stun_cfg.ioqueue == NULL)) {
+        PJ_LOG(1, (THIS_FILE, "create ice ioqueue failed"));
+        goto create_fail;
+    }
 
     pj_ice_strans_cfg *pIceCfg = &pIceSession->iceCfg;
     pIceCfg->opt.aggressive = PJ_FALSE;
     pIceCfg->opt.trickle = PJ_ICE_SESS_TRICKLE_FULL;
     ICE_WORKER_THREAD_PARAM *pIceThreadParam = malloc(sizeof(ICE_WORKER_THREAD_PARAM));
+    if (pIceThreadParam == NULL) {
+        PJ_LOG(1, (THIS_FILE, "malloc ice worker param failed"));
+        goto create_fail;
+    }
     pIceThreadParam->pIceSession = pIceSession;
     pIceThreadParam->pCfg = pIceCfg;
     pIceThreadParam->bThreadQuitFlag = false;
@@ -455,6 +473,23 @@ bool pj_ice_session_create(pj_ice_session_cfg_t *pCfg, pj_ice_session_t **ppIceS
     //  1, szDNSServers, NULL);
     *ppIceSession = pIceSession;
     return true;
+
+create_fail:
+    if (pIceSession->iceCfg.stun_cfg.ioqueue != NULL) {
+        pj_ioqueue_destroy(pIceSession->iceCfg.stun_cfg.ioqueue);
+        pIceSession->iceCfg.stun_cfg.ioqueue = NULL;
+    }
+    if (pIceSession->iceCfg.stun_cfg.timer_heap != NULL) {
+        pj_timer_heap_destroy(pIceSession->iceCfg.stun_cfg.timer_heap);
+        pIceSession->iceCfg.stun_cfg.timer_heap = NULL;
+    }
+    if (pIceSession->pPool != NULL) {
+        pj_pool_release(pIceSession->pPool);
+        pIceSession->pPool = NULL;
+    }
+    pj_caching_pool_destroy(&pIceSession->cachePool);
+    free(pIceSession);
+    return false;
 }
 
 bool pj_ice_session_destroy(pj_ice_session_t *pIceSession)
@@ -540,7 +575,9 @@ bool pj_ice_session_init(pj_ice_session_t *pIceSession, pj_ice_session_cfg_t *pC
     uint16_t server_port = 0;
     cJSON *el_root_token = cJSON_Parse(pCfg->server_tokens);
     if (!cJSON_IsArray(el_root_token)) {
-        return -1;
+        /* bool return: -1 would be truthy and hide the failure from callers */
+        cJSON_Delete(el_root_token);
+        return false;
     }
     cJSON *el_one_token;
     cJSON_ArrayForEach(el_one_token, el_root_token)
@@ -649,10 +686,11 @@ bool pj_ice_session_init(pj_ice_session_t *pIceSession, pj_ice_session_cfg_t *pC
     pj_str_t pjstrLocalUFrag = pj_str(local_ufrag);
     pj_str_t pjstrLocalPasswd = pj_str(local_passwd);
     status = pj_ice_strans_init_ice(ice_st, role, &pjstrLocalUFrag, &pjstrLocalPasswd);
-    if (status != PJ_SUCCESS)
+    if (status != PJ_SUCCESS) {
         pj_print_error("error creating session", status);
-    else
-        PJ_LOG(3, (THIS_FILE, "ICE session created"));
+        return false;
+    }
+    PJ_LOG(3, (THIS_FILE, "ICE session created"));
     return true;
 }
 
@@ -694,7 +732,7 @@ bool pj_ice_session_try_start_ice(pj_ice_session_t *pIceSession, const char *tag
     pj_status_t status;
     char errmsg[PJ_ERR_MSG_SIZE];
     pj_ice_strans *ice_st;
-    pj_str_t rufrag;
+    pj_str_t rufrag = pj_str("");
 
     if (pIceSession == NULL || pIceSession->pIceSTransport == NULL) {
         return false;
@@ -709,7 +747,11 @@ bool pj_ice_session_try_start_ice(pj_ice_session_t *pIceSession, const char *tag
         return true;
     }
 
-    pj_ice_strans_get_ufrag_pwd(ice_st, NULL, NULL, &rufrag, NULL);
+    status = pj_ice_strans_get_ufrag_pwd(ice_st, NULL, NULL, &rufrag, NULL);
+    if (status != PJ_SUCCESS) {
+        pj_print_error("get ufrag pwd failed", status);
+        return false;
+    }
     if (rufrag.slen <= 0) {
         return true;
     }
@@ -790,6 +832,10 @@ bool pj_ice_session_is_nego_success(pj_ice_session_t *pIceSession)
 
 bool pj_ice_session_sendto(pj_ice_session_t *pIceSession, void *pkt, uint32_t len)
 {
+    if (pIceSession == NULL || pIceSession->pIceSTransport == NULL) {
+        return false;
+    }
+
     pj_thread_register2();
 
     pj_status_t status = PJ_FALSE;
@@ -798,6 +844,10 @@ bool pj_ice_session_sendto(pj_ice_session_t *pIceSession, void *pkt, uint32_t le
     char szRCandAddr[PJ_INET6_ADDRSTRLEN + 10] = {0};
     unsigned comp_id = 1; // Component starts with ID 1
     const pj_ice_sess_check *pIceSessCheck = pj_ice_strans_get_valid_pair(ice_st, comp_id);
+    if (pIceSessCheck == NULL || pIceSessCheck->lcand == NULL || pIceSessCheck->rcand == NULL) {
+        PJ_LOG(4, (THIS_FILE, "sendto: no valid ICE pair (comp=%u)", comp_id));
+        return false;
+    }
     pj_sockaddr_print(&pIceSessCheck->lcand->addr, szLCandAddr, sizeof(szLCandAddr), 3);
     pj_sockaddr_print(&pIceSessCheck->rcand->addr, szRCandAddr, sizeof(szRCandAddr), 3);
     status = pj_ice_strans_sendto2(ice_st, comp_id, pkt, len, &pIceSessCheck->rcand->addr,

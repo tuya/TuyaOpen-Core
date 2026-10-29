@@ -1952,6 +1952,11 @@ OPERATE_RET __ai_parse_auth_resp(CHAR_T *de_buf, UINT_T attr_len)
                 ai_basic_proto->connection_id = NULL;
             }
             ai_basic_proto->connection_id = OS_MALLOC(attr[idx].length + 1);
+            if (ai_basic_proto->connection_id == NULL) {
+                PR_ERR("malloc connection id failed");
+                rt = OPRT_MALLOC_FAILED;
+                goto EXIT;
+            }
             memset(ai_basic_proto->connection_id, 0, attr[idx].length + 1);
             if (ai_basic_proto->connection_id) {
                 memcpy(ai_basic_proto->connection_id, attr[idx].value.str, attr[idx].length);

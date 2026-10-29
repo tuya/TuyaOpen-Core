@@ -233,8 +233,9 @@ static int atop_response_data_decode(const char *key, const uint8_t *input, size
     }
 
     cJSON *item = cJSON_GetObjectItem(root, "result");
-    if (NULL == item) {
+    if (!cJSON_IsString(item)) {
         PR_ERR("no result");
+        cJSON_Delete(root);
         return OPRT_CJSON_GET_ERR;
     }
 
@@ -246,6 +247,11 @@ static int atop_response_data_decode(const char *key, const uint8_t *input, size
     // base64 decode buffer
     size_t b64buffer_len = value_length * 3 / 4;
     uint8_t *b64buffer = core_malloc(b64buffer_len);
+    if (NULL == b64buffer) {
+        PR_ERR("malloc b64buffer error:%d", (int)b64buffer_len);
+        cJSON_Delete(root);
+        return OPRT_MALLOC_FAILED;
+    }
     size_t b64buffer_olen = 0;
 
     // base64 decode
@@ -315,16 +321,18 @@ static int atop_response_result_parse_cjson(const uint8_t *input, size_t ilen, a
     response->result = NULL;
 
     // error msg dump
-    if (cJSON_GetObjectItem(root, "errorMsg")) {
-        PR_ERR("errorMsg:%s", cJSON_GetObjectItem(root, "errorMsg")->valuestring);
+    cJSON *error_msg = cJSON_GetObjectItem(root, "errorMsg");
+    if (cJSON_IsString(error_msg)) {
+        PR_ERR("errorMsg:%s", error_msg->valuestring);
     }
 
-    if (cJSON_GetObjectItem(root, "errorCode") == NULL) {
+    cJSON *error_code = cJSON_GetObjectItem(root, "errorCode");
+    if (!cJSON_IsString(error_code)) {
         cJSON_Delete(root);
         return OPRT_COM_ERROR;
     }
 
-    errorCode = cJSON_GetObjectItem(root, "errorCode")->valuestring;
+    errorCode = error_code->valuestring;
 
     if (strcasecmp(errorCode, "GATEWAY_NOT_EXISTS") == 0) {
         rt = OPRT_LINK_CORE_HTTP_GW_NOT_EXIST;

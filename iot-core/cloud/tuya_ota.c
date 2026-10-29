@@ -204,14 +204,30 @@ int tuya_ota_start(cJSON *upgrade)
     int rt = OPRT_OK;
 
     tuya_ota_t *ota = s_ota_ctx;
+    if (ota == NULL) {
+        PR_ERR("ota context not initialized");
+        return OPRT_INVALID_PARM;
+    }
 
-    ota->channel = cJSON_GetObjectItem(upgrade, "type")->valueint;
-    ota->msg.file_size = atol(cJSON_GetObjectItem(upgrade, "size")->valuestring);
-    strncpy(ota->msg.fw_url, cJSON_GetObjectItem(upgrade, "httpsUrl")->valuestring, sizeof(ota->msg.fw_url) - 1);
+    cJSON *type_item = cJSON_GetObjectItem(upgrade, "type");
+    cJSON *size_item = cJSON_GetObjectItem(upgrade, "size");
+    cJSON *url_item = cJSON_GetObjectItem(upgrade, "httpsUrl");
+    cJSON *hmac_item = cJSON_GetObjectItem(upgrade, "hmac");
+    cJSON *md5_item = cJSON_GetObjectItem(upgrade, "md5");
+
+    if (!cJSON_IsNumber(type_item) || !cJSON_IsString(size_item) || !cJSON_IsString(url_item) ||
+        !cJSON_IsString(hmac_item) || !cJSON_IsString(md5_item)) {
+        PR_ERR("ota upgrade info invalid");
+        return OPRT_CJSON_GET_ERR;
+    }
+
+    ota->channel = type_item->valueint;
+    ota->msg.file_size = atol(size_item->valuestring);
+    strncpy(ota->msg.fw_url, url_item->valuestring, sizeof(ota->msg.fw_url) - 1);
     ota->msg.fw_url[sizeof(ota->msg.fw_url) - 1] = '\0';
-    strncpy(ota->msg.fw_hmac, cJSON_GetObjectItem(upgrade, "hmac")->valuestring, sizeof(ota->msg.fw_hmac) - 1);
+    strncpy(ota->msg.fw_hmac, hmac_item->valuestring, sizeof(ota->msg.fw_hmac) - 1);
     ota->msg.fw_hmac[sizeof(ota->msg.fw_hmac) - 1] = '\0';
-    strncpy(ota->msg.fw_md5, cJSON_GetObjectItem(upgrade, "md5")->valuestring, sizeof(ota->msg.fw_md5) - 1);
+    strncpy(ota->msg.fw_md5, md5_item->valuestring, sizeof(ota->msg.fw_md5) - 1);
     ota->msg.fw_md5[sizeof(ota->msg.fw_md5) - 1] = '\0';
 
     THREAD_CFG_T thrd_param = {0};

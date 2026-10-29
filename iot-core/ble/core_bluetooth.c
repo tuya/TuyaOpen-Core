@@ -335,11 +335,25 @@ OPERATE_RET core_ble_bt_init(CORE_BLE_ROLE_E role, const CORE_BLE_EVT_FUNC_CB bl
         ble_stack_role |= CORE_BLE_ROLE_CLIENT;
     }
 
+    uint8_t service_alloced = 0;
     if (!pcore_ble_service) {
         pcore_ble_service = core_malloc(sizeof(CORE_BLE_SERVICE_PARAMS_T) * CORE_BLE_GATT_SERVICE_MAX_NUM);
+        if (!pcore_ble_service) {
+            PR_ERR("ble service malloc failed");
+            return OPRT_MALLOC_FAILED;
+        }
+        service_alloced = 1;
     }
     if (!pcore_ble_service_char) {
         pcore_ble_service_char = core_malloc(sizeof(CORE_BLE_CHAR_PARAMS_T) * CORE_BLE_GATT_CHAR_MAX_NUM);
+        if (!pcore_ble_service_char) {
+            PR_ERR("ble service char malloc failed");
+            if (service_alloced) {
+                core_free(pcore_ble_service);
+                pcore_ble_service = NULL;
+            }
+            return OPRT_MALLOC_FAILED;
+        }
     }
 
     if ((role & CORE_BLE_ROLE_PERIPERAL) == CORE_BLE_ROLE_PERIPERAL) {

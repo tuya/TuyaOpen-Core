@@ -68,14 +68,25 @@ static int iotdns_response_decode(const uint8_t *input, size_t ilen, tuya_endpoi
         return OPRT_CJSON_PARSE_ERR;
     }
 
-    if (cJSON_GetObjectItem(root, "httpsSelfUrl") == NULL || cJSON_GetObjectItem(root, "mqttsSelfUrl") == NULL) {
+    cJSON *https_self = cJSON_GetObjectItem(root, "httpsSelfUrl");
+    cJSON *mqtts_self = cJSON_GetObjectItem(root, "mqttsSelfUrl");
+    if (https_self == NULL || mqtts_self == NULL) {
         cJSON_Delete(root);
         return OPRT_CR_CJSON_ERR;
     }
 
-    char *httpsSelfUrl = cJSON_GetObjectItem(cJSON_GetObjectItem(root, "httpsSelfUrl"), "addr")->valuestring;
-    char *mqttsSelfUrl = cJSON_GetObjectItem(cJSON_GetObjectItem(root, "mqttsSelfUrl"), "addr")->valuestring;
-    char *caArr0 = cJSON_GetArrayItem(cJSON_GetObjectItem(root, "caArr"), 0)->valuestring;
+    cJSON *https_addr = cJSON_GetObjectItem(https_self, "addr");
+    cJSON *mqtts_addr = cJSON_GetObjectItem(mqtts_self, "addr");
+    cJSON *ca_arr = cJSON_GetObjectItem(root, "caArr");
+    cJSON *ca_arr0 = cJSON_IsArray(ca_arr) ? cJSON_GetArrayItem(ca_arr, 0) : NULL;
+    if (!cJSON_IsString(https_addr) || !cJSON_IsString(mqtts_addr) || !cJSON_IsString(ca_arr0)) {
+        cJSON_Delete(root);
+        return OPRT_CR_CJSON_ERR;
+    }
+
+    char *httpsSelfUrl = https_addr->valuestring;
+    char *mqttsSelfUrl = mqtts_addr->valuestring;
+    char *caArr0 = ca_arr0->valuestring;
     PR_DEBUG("httpsSelfUrl:%s", httpsSelfUrl);
     PR_DEBUG("mqttsSelfUrl:%s", mqttsSelfUrl);
 
@@ -295,7 +306,11 @@ static int iotdns_query_domain_certs_parser(const uint8_t *input, uint8_t **cace
 
     cJSON *errcode = cJSON_GetObjectItem(root, "errcode");
     if (errcode) {
-        PR_ERR("errorCode:%s", errcode->valuestring);
+        if (cJSON_IsString(errcode)) {
+            PR_ERR("errorCode:%s", errcode->valuestring);
+        } else {
+            PR_ERR("errorCode type invalid");
+        }
         rt = OPRT_COM_ERROR;
         goto __exit;
     }

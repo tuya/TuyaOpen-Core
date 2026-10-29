@@ -125,6 +125,10 @@ OPERATE_RET OnIotInited()
     int len = 256;
     ipc_skills = (char *)malloc(len);
 #endif
+    if (NULL == ipc_skills) {
+        PR_ERR("malloc ipc_skills failed");
+        return OPRT_MALLOC_FAILED;
+    }
     memset(ipc_skills, 0, len);
     if (ipc_skills) {
         // strcpy(ipc_skills, "\"skillParam\":\"");

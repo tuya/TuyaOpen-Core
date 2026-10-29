@@ -82,23 +82,22 @@ static void mqtt_bind_activate_token_on(tuya_protocol_event_t *ev)
     cJSON *data = (cJSON *)(ev->data);
     mqtt_bind_t *mqbind = (mqtt_bind_t *)(ev->user_data);
 
-    if (NULL == cJSON_GetObjectItem(data, "token")) {
-        PR_ERR("not found token");
-        return;
-    }
+    cJSON *token_item = cJSON_GetObjectItem(data, "token");
+    cJSON *region_item = cJSON_GetObjectItem(data, "region");
+    cJSON *env_item = cJSON_GetObjectItem(data, "env");
 
-    if (NULL == cJSON_GetObjectItem(data, "region")) {
-        PR_ERR("not found region");
+    if (!cJSON_IsString(token_item) || !cJSON_IsString(region_item)) {
+        PR_ERR("not found token or region");
         return;
     }
 
     /* get token from cJSON object */
-    char *token = cJSON_GetObjectItem(data, "token")->valuestring;
-    char *region = cJSON_GetObjectItem(data, "region")->valuestring;
+    char *token = token_item->valuestring;
+    char *region = region_item->valuestring;
     char *regist_key = "pro"; // online env default
 
-    if (cJSON_GetObjectItem(data, "env")) {
-        regist_key = cJSON_GetObjectItem(data, "env")->valuestring;
+    if (cJSON_IsString(env_item)) {
+        regist_key = env_item->valuestring;
     }
 
     if (strlen(token) > MAX_LENGTH_TOKEN) {

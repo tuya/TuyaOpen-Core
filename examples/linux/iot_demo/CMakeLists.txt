@@ -106,8 +106,10 @@ list(APPEND _iot_demo_link -Wl,--end-group tuyaopen-port tuyaopen-headers)
 target_link_libraries(iot_demo PRIVATE ${_iot_demo_link})
 
 # core_kv selftest (standalone executable, links the same libraries as iot_demo)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/selftest/core_kv_selftest.c")
 add_executable(core_kv_selftest selftest/core_kv_selftest.c)
 target_link_libraries(core_kv_selftest PRIVATE ${_iot_demo_link})
+endif()
 unset(_iot_demo_link)
 
 # qrcode has no circular dependency and links outside the group; when the switch

@@ -115,23 +115,28 @@ static int activate_json_string_parse(const char *str, tuya_activated_data_t *ou
         goto __exit;
     }
 
-    if (cJSON_GetObjectItem(root, "devId") == NULL || cJSON_GetObjectItem(root, "secKey") == NULL ||
-        cJSON_GetObjectItem(root, "localKey") == NULL || cJSON_GetObjectItem(root, "schemaId") == NULL) {
+    cJSON *dev_id = cJSON_GetObjectItem(root, "devId");
+    cJSON *sec_key = cJSON_GetObjectItem(root, "secKey");
+    cJSON *local_key = cJSON_GetObjectItem(root, "localKey");
+    cJSON *schema_id = cJSON_GetObjectItem(root, "schemaId");
+
+    if (!cJSON_IsString(dev_id) || !cJSON_IsString(sec_key) || !cJSON_IsString(local_key) ||
+        !cJSON_IsString(schema_id)) {
         result = OPRT_CJSON_GET_ERR;
         goto __exit;
     }
 
-    strncpy(out->devid, cJSON_GetObjectItem(root, "devId")->valuestring, sizeof(out->devid) - 1);
+    strncpy(out->devid, dev_id->valuestring, sizeof(out->devid) - 1);
     out->devid[sizeof(out->devid) - 1] = '\0';
-    strncpy(out->seckey, cJSON_GetObjectItem(root, "secKey")->valuestring, sizeof(out->seckey) - 1);
+    strncpy(out->seckey, sec_key->valuestring, sizeof(out->seckey) - 1);
     out->seckey[sizeof(out->seckey) - 1] = '\0';
-    strncpy(out->localkey, cJSON_GetObjectItem(root, "localKey")->valuestring, sizeof(out->localkey) - 1);
+    strncpy(out->localkey, local_key->valuestring, sizeof(out->localkey) - 1);
     out->localkey[sizeof(out->localkey) - 1] = '\0';
-    strncpy(out->schemaId, cJSON_GetObjectItem(root, "schemaId")->valuestring, sizeof(out->schemaId) - 1);
+    strncpy(out->schemaId, schema_id->valuestring, sizeof(out->schemaId) - 1);
     out->schemaId[sizeof(out->schemaId) - 1] = '\0';
 
     cJSON *stdTimeZone = cJSON_GetObjectItem(root, "stdTimeZone");
-    if (stdTimeZone) {
+    if (cJSON_IsString(stdTimeZone)) {
         strncpy(out->timezone, stdTimeZone->valuestring, sizeof(out->timezone) - 1);
         out->timezone[sizeof(out->timezone) - 1] = '\0';
     }
@@ -206,15 +211,24 @@ static int activate_response_parse(atop_base_response_t *response)
     tuya_iot_client_t *client = (tuya_iot_client_t *)response->user_data;
     cJSON *result_root = response->result;
 
-    if (!cJSON_HasObjectItem(result_root, "schema") || !cJSON_HasObjectItem(result_root, "schemaId")) {
+    cJSON *schema_id_item = cJSON_GetObjectItem(result_root, "schemaId");
+    if (!cJSON_IsString(schema_id_item)) {
         PR_ERR("not found schema");
         cJSON_Delete(result_root);
+        response->result = NULL;
         return OPRT_CJSON_GET_ERR;
     }
 
     // cJSON object to string save
-    char *schemaId = cJSON_GetObjectItem(result_root, "schemaId")->valuestring;
+    char *schemaId = schema_id_item->valuestring;
     cJSON *schema_obj = cJSON_DetachItemFromObject(result_root, "schema");
+    if (!cJSON_IsString(schema_obj)) {
+        PR_ERR("not found schema");
+        cJSON_Delete(schema_obj);
+        cJSON_Delete(result_root);
+        response->result = NULL;
+        return OPRT_CJSON_GET_ERR;
+    }
     ret = core_kv_set(schemaId, (const uint8_t *)schema_obj->valuestring, strlen(schema_obj->valuestring));
     cJSON_Delete(schema_obj);
     if (ret != OPRT_OK) {
@@ -224,6 +238,10 @@ static int activate_response_parse(atop_base_response_t *response)
 
     // activate info save
     char *result_string = cJSON_PrintUnformatted(result_root);
+    if (result_string == NULL) {
+        PR_ERR("print activate data failed");
+        return OPRT_CJSON_GET_ERR;
+    }
     const char *activate_data_key = client->config.storage_namespace;
     // PR_DEBUG("result len %d :%s", (int)strlen(result_string), result_string);
     ret = core_kv_set(activate_data_key, (const uint8_t *)result_string, strlen(result_string));
@@ -324,18 +342,20 @@ static void mqtt_service_reset_cmd_on(tuya_protocol_event_t *ev)
     tuya_iot_client_t *client = ev->user_data;
     cJSON *data = (cJSON *)(ev->data);
 
-    if (NULL == cJSON_GetObjectItem(data, "gwId")) {
+    cJSON *gw_id = cJSON_GetObjectItem(data, "gwId");
+    if (!cJSON_IsString(gw_id)) {
         PR_ERR("not found gwId");
+        return;
     }
 
-    PR_WARN("Reset id:%s", cJSON_GetObjectItem(data, "gwId")->valuestring);
+    PR_WARN("Reset id:%s", gw_id->valuestring);
 
     /* DP event send */
     client->event.id = TUYA_EVENT_RESET;
     client->event.type = TUYA_DATE_TYPE_INTEGER;
 
-    if (cJSON_GetObjectItem(ev->root_json, "type") &&
-        strcmp(cJSON_GetObjectItem(ev->root_json, "type")->valuestring, "reset_factory") == 0) {
+    cJSON *type = cJSON_GetObjectItem(ev->root_json, "type");
+    if (cJSON_IsString(type) && strcmp(type->valuestring, "reset_factory") == 0) {
         PR_DEBUG("cmd is reset factory, ungister");
         client->event.value.asInteger = TUYA_RESET_TYPE_REMOTE_FACTORY;
     } else {

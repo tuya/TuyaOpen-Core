@@ -95,10 +95,12 @@ static void __mqtt_event_workq_callback(void *data)
     cJSON *req_type = cJSON_GetObjectItem(event->data, "reqType");
     cJSON *inner_data = cJSON_GetObjectItem(event->data, "data");
     cJSON *task_id = inner_data ? cJSON_GetObjectItem(inner_data, "taskId") : NULL;
+    const char *req_type_str = cJSON_IsString(req_type) ? req_type->valuestring : NULL;
+    const char *task_id_str = cJSON_IsString(task_id) ? task_id->valuestring : NULL;
 
     PR_DEBUG("mqtt dispatch >> reqType=%s taskId=%s",
-             req_type ? req_type->valuestring : "null",
-             task_id  ? task_id->valuestring  : "null");
+             req_type_str ? req_type_str : "null",
+             task_id_str ? task_id_str : "null");
 
     if (tuya_slist_empty(&mgr->head)) {
         PR_ERR("no dispatch node");
@@ -113,7 +115,6 @@ static void __mqtt_event_workq_callback(void *data)
     core_mutex_lock(mgr->mutex);
 
     // Traverse all nodes and invoke callbacks whose type_name matches reqType
-    const char *req_type_str = req_type ? req_type->valuestring : NULL;
     SLIST_HEAD *pos = NULL;
     SLIST_FOR_EACH(pos, &mgr->head)
     {

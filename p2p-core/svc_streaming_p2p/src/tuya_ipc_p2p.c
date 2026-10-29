@@ -1209,6 +1209,10 @@ static OPERATE_RET __p2p_pack_h264_rtp_and_send(int client, char *pData, int len
     uint32_t ssrc = 10;
     uint32_t timestamp = __p2p_video_rtp_timestamp_ms90();
     pRtpDelegate = rtp_payload_encode_create(/*H264_PAY_LOAD*/ 96, "H264", seq, ssrc, &rtp_packer, &rtp_pack_nal_arg);
+    if (pRtpDelegate == NULL) {
+        PR_ERR("rtp_payload_encode_create h264 failed");
+        return OPRT_COM_ERROR;
+    }
     ret = rtp_payload_encode_input(pRtpDelegate, pData, len, timestamp);
     if (ret != 0) {
         PR_ERR("rtp_payload_encode_input h264 error:%d after %d packets", ret, rtp_pack_nal_arg.sent_pkts);
@@ -1353,6 +1357,10 @@ static OPERATE_RET __p2p_pack_g711_rtp_and_send(int client, char *pData, int len
         payload = 99 /*RTP_PCM_PAYLOAD*/;
     }
     pRtpDelegate = rtp_payload_encode_create(payload, codec_name, seq, ssrc, &rtp_packer, &rtp_pack_nal_arg);
+    if (pRtpDelegate == NULL) {
+        PR_ERR("rtp_payload_encode_create %s failed", codec_name);
+        return OPRT_COM_ERROR;
+    }
     ret          = rtp_payload_encode_input(pRtpDelegate, pData, len, timestamp);
     rtp_payload_encode_getinfo(pRtpDelegate, &sg_p2p_session->audio_seq_num, &timestamp);
     rtp_payload_encode_destroy(pRtpDelegate);

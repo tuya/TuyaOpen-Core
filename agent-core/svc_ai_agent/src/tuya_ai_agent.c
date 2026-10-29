@@ -529,7 +529,7 @@ STATIC OPERATE_RET __ai_parse_nlg(ty_cJSON *root, BOOL_T eof)
             image_num = ty_cJSON_GetArraySize(url);
             for (idx = 0; idx < image_num; idx++) {
                 ty_cJSON *url_item = ty_cJSON_GetArrayItem(url, idx);
-                if ((url_item) && (strlen(url_item->valuestring) > 0)) {
+                if (ty_cJSON_IsString(url_item) && (strlen(url_item->valuestring) > 0)) {
                     rt = tuya_ai_http_dld_image(url_item->valuestring, __ai_image_recv_cb);
                 }
             }

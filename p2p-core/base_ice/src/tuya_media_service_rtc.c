@@ -671,6 +671,13 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
         int32_t err_code = 0;
         core_mutex_create_init(&g_p2p_session_mutex);
         g_pRtcSession = ctx_session_create(&cfg, RTC_STATE_P2P_CONNECT, &err_code);
+        if (g_pRtcSession == NULL) {
+            PR_ERR("ctx_session_create failed err=%d", err_code);
+            if (root != NULL) {
+                cJSON_Delete(root);
+            }
+            return -1;
+        }
         memcpy(&g_pRtcSession->cb, &g_options.cb, sizeof(g_options.cb));
 
         iceSessionCfg.cb.ice_on_rx_data = ice_on_rx_data;
@@ -681,8 +688,24 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
         iceSessionCfg.local_passwd = cfg.ice_password;
         iceSessionCfg.user_data = g_pRtcSession;
         memcpy(iceSessionCfg.server_tokens, cfg.ice_server_tokens, sizeof(iceSessionCfg.server_tokens));
-        pj_ice_session_create(&iceSessionCfg, &g_pRtcSession->pIce);
-        pj_ice_session_init(g_pRtcSession->pIce, &iceSessionCfg);
+        if (!pj_ice_session_create(&iceSessionCfg, &g_pRtcSession->pIce)) {
+            PR_ERR("pj_ice_session_create failed");
+            ctx_session_destroy(g_pRtcSession);
+            g_pRtcSession = NULL;
+            if (root != NULL) {
+                cJSON_Delete(root);
+            }
+            return -1;
+        }
+        if (!pj_ice_session_init(g_pRtcSession->pIce, &iceSessionCfg)) {
+            PR_ERR("pj_ice_session_init failed");
+            ctx_session_destroy(g_pRtcSession);
+            g_pRtcSession = NULL;
+            if (root != NULL) {
+                cJSON_Delete(root);
+            }
+            return -1;
+        }
 
         {
             if (__core_thread_spawn(&g_pRtcSession->tid, &g_pRtcSession->tid_join, rtc_worker_thread, g_pRtcSession,
@@ -1340,9 +1363,12 @@ finish:
 void ice_on_ice_complete(pj_ice_strans *ice_st, pj_ice_strans_op op, pj_status_t status)
 {
     tuya_p2p_rtc_session_t *pRtcSession = (tuya_p2p_rtc_session_t *)pj_ice_strans_get_user_data(ice_st);
-    pj_ice_session_t *pIceSession = (pj_ice_session_t *)pRtcSession->pIce;
+    pj_ice_session_t *pIceSession = NULL;
     char errmsg[PJ_ERR_MSG_SIZE];
 
+    if (!pRtcSession)
+        return;
+    pIceSession = (pj_ice_session_t *)pRtcSession->pIce;
     if (!pIceSession)
         return;
 
@@ -1402,7 +1428,11 @@ void ice_on_ice_complete(pj_ice_strans *ice_st, pj_ice_strans_op op, pj_status_t
 void ice_on_new_candidate(pj_ice_strans *ice_st, const pj_ice_sess_cand *cand, pj_bool_t last)
 {
     tuya_p2p_rtc_session_t *pRtcSession = (tuya_p2p_rtc_session_t *)pj_ice_strans_get_user_data(ice_st);
-    pj_ice_session_t *pIceSession = (pj_ice_session_t *)pRtcSession->pIce;
+    pj_ice_session_t *pIceSession = NULL;
+
+    if (!pRtcSession)
+        return;
+    pIceSession = (pj_ice_session_t *)pRtcSession->pIce;
     if (!pIceSession)
         return;
 
@@ -1850,6 +1880,8 @@ int tuya_p2p_rtc_channels_init(tuya_p2p_rtc_session_t *rtc)
     if (rtc->channels == NULL) {
         goto finish;
     }
+    /* Destroy walks every slot even when init fails midway; zero first. */
+    memset(rtc->channels, 0, (rtc->cfg.channel_number + 1) * sizeof(rtc_channel_t));
     for (i = 0; i < rtc->cfg.channel_number + 1; i++) {
         uint32_t channel_id;
         uint32_t send_buf_size;

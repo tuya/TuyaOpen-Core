@@ -743,40 +743,55 @@ static void rpa_queue_destroy(rpa_queue_t *queue)
 static BOOL_T rpa_queue_create(rpa_queue_t **q, uint32_t queue_capacity)
 {
     rpa_queue_t *queue;
+    BOOL_T mutex_inited = false;
+    BOOL_T not_empty_inited = false;
+    BOOL_T not_full_inited = false;
+
+    if (q == NULL) {
+        return false;
+    }
+    *q = NULL;
+
     queue = malloc(sizeof(rpa_queue_t));
     if (!queue) {
         return false;
     }
-    *q = queue;
     memset(queue, 0, sizeof(rpa_queue_t));
 
     if (!(queue->one_big_mutex = malloc(sizeof(pthread_mutex_t))))
-        return false;
+        goto error;
     if (!(queue->not_empty = malloc(sizeof(pthread_cond_t))))
-        return false;
+        goto error;
     if (!(queue->not_full = malloc(sizeof(pthread_cond_t))))
-        return false;
+        goto error;
 
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
     int rv = pthread_mutex_init(queue->one_big_mutex, &attr);
+    pthread_mutexattr_destroy(&attr);
     if (rv != 0) {
         goto error;
     }
+    mutex_inited = true;
 
     rv = pthread_cond_init(queue->not_empty, NULL);
     if (rv != 0) {
         goto error;
     }
+    not_empty_inited = true;
 
     rv = pthread_cond_init(queue->not_full, NULL);
     if (rv != 0) {
         goto error;
     }
+    not_full_inited = true;
 
     /* Set all the data in the queue to NULL */
     queue->data = malloc(queue_capacity * sizeof(void *));
+    if (queue->data == NULL) {
+        goto error;
+    }
     queue->bounds = queue_capacity;
     queue->nelts = 0;
     queue->in = 0;
@@ -785,9 +800,23 @@ static BOOL_T rpa_queue_create(rpa_queue_t **q, uint32_t queue_capacity)
     queue->full_waiters = 0;
     queue->empty_waiters = 0;
 
+    *q = queue;
     return true;
 
 error:
+    if (not_full_inited) {
+        pthread_cond_destroy(queue->not_full);
+    }
+    if (not_empty_inited) {
+        pthread_cond_destroy(queue->not_empty);
+    }
+    if (mutex_inited) {
+        pthread_mutex_destroy(queue->one_big_mutex);
+    }
+    free(queue->not_full);
+    free(queue->not_empty);
+    free(queue->one_big_mutex);
+    free(queue->data);
     free(queue);
     return false;
 }

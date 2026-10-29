@@ -1239,13 +1239,14 @@ static void lan_udp_serv_sock_read(int32_t fd)
         core_free(frame_out.data);
         return;
     }
-    if ((NULL == cJSON_GetObjectItem(root, "ip")) || (NULL == cJSON_GetObjectItem(root, "from"))) {
+    cJSON *ip_item = cJSON_GetObjectItem(root, "ip");
+    if ((!cJSON_IsString(ip_item)) || (NULL == cJSON_GetObjectItem(root, "from"))) {
         PR_ERR("json data invaild");
         cJSON_Delete(root);
         core_free(frame_out.data);
         return;
     }
-    addr_json = core_net_str2addr(cJSON_GetObjectItem(root, "ip")->valuestring);
+    addr_json = core_net_str2addr(ip_item->valuestring);
     // PR_DEBUG("ip:%s", cJSON_GetObjectItem(root, "ip")->valuestring);
     // PR_DEBUG("addr:0x%x, addr_json:0x%x", addr, addr_json);
     cJSON_Delete(root);

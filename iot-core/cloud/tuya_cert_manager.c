@@ -442,23 +442,29 @@ void tuya_cert_save_to_kv(cJSON *result)
 
     cJSON *p_ca_arr = cJSON_GetObjectItem(result, "caArr");
     if (p_ca_arr != NULL) {
-        int arr_size = cJSON_GetArraySize(p_ca_arr);
-        int index    = 0;
+        int arr_size  = cJSON_GetArraySize(p_ca_arr);
+        int valid_cnt = 0;
+        int index     = 0;
         for (index = 0; index < arr_size; index++) {
             cJSON *p_ca            = cJSON_GetArrayItem(p_ca_arr, index);
             char   tls_ca_name[20] = {0};
-            snprintf(tls_ca_name, sizeof(tls_ca_name), "tls_ca%d", index);
+            if (!cJSON_IsString(p_ca)) {
+                PR_ERR("invalid ca at index:%d", index);
+                continue;
+            }
+            snprintf(tls_ca_name, sizeof(tls_ca_name), "tls_ca%d", valid_cnt);
             PR_DEBUG("tls_ca_name:%s", tls_ca_name);
             core_kv_set(tls_ca_name, (uint8_t *)(p_ca->valuestring), strlen(p_ca->valuestring) + 1);
+            valid_cnt++;
         }
         // Delete old entries beyond the new count
-        for (int i = arr_size; i < 16; i++) {
+        for (int i = valid_cnt; i < 16; i++) {
             char tls_ca_name[20] = {0};
             snprintf(tls_ca_name, sizeof(tls_ca_name), "tls_ca%d", i);
             core_kv_del(tls_ca_name);
         }
         char ca_cnt_str[5] = {0};
-        snprintf(ca_cnt_str, 5, "%u", arr_size);
+        snprintf(ca_cnt_str, 5, "%u", (unsigned int)valid_cnt);
         core_kv_set("tls_ca_cnt", (uint8_t *)ca_cnt_str, 5);
     }
 
