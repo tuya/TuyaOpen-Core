@@ -26,6 +26,10 @@
 #include "tls_transporter.h"
 #include "core_network.h"
 #include "core_memory.h"
+#include "core_system.h"
+#include "tuya_tls_config.h"
+#include MBEDTLS_CONFIG_FILE
+#include "mbedtls/ssl.h"
 #include "tuya_tls.h"
 
 typedef struct tls_transporter_inter_t {
@@ -42,6 +46,10 @@ static int __tls_transporter_send_cb(void *ctx, const unsigned char *buf, size_t
 {
     tuya_tls_transporter_t tls_transporter = (tuya_tls_transporter_t)ctx;
 
+    /* Keep the timeout error as-is: tuya_tls_write() retries WANT_WRITE in a
+     * tight loop without a progress bound, so reporting a send timeout as
+     * WANT_WRITE could wait forever on a peer that stopped reading. A hard
+     * error lets the publish fail fast and the link recover. */
     return tuya_transporter_write(tls_transporter->tcp_transporter, (uint8_t *)buf, len,
                                   tls_transporter->write_timeout);
 }
@@ -49,7 +57,19 @@ static int __tls_transporter_recv_cb(void *ctx, unsigned char *buf, size_t len)
 {
     tuya_tls_transporter_t tls_transporter = (tuya_tls_transporter_t)ctx;
 
-    return tuya_transporter_read(tls_transporter->tcp_transporter, buf, len, tls_transporter->read_timeout);
+    uint64_t t0 = core_system_get_millisecond();
+    int ret = tuya_transporter_read(tls_transporter->tcp_transporter, buf, len, tls_transporter->read_timeout);
+    uint64_t elapsed = core_system_get_millisecond() - t0;
+
+    if (elapsed >= 500ULL) {
+        PR_WARN("tls bio recv took %ums (timeout %d) ret=%d", (unsigned)elapsed, tls_transporter->read_timeout, ret);
+    }
+    if (ret == OPRT_RESOURCE_NOT_READY) {
+        /* Timeout is not an error for mbedtls: report WANT_READ so the state
+         * machine stays intact and the next call resumes the same record. */
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+    return ret;
 }
 
 /**
@@ -156,7 +176,13 @@ OPERATE_RET tuya_tls_transporter_read(tuya_transporter_t t, uint8_t *buf, int le
 
     tls_transporter->read_timeout = timeout_ms;
 
-    return tuya_tls_read(tls_transporter->tls_handler, buf, len);
+    int ret = tuya_tls_read(tls_transporter->tls_handler, buf, len);
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        /* Keep the transporter contract used by MQTT/HTTP: a retryable "no
+         * data yet" is OPRT_RESOURCE_NOT_READY, not an mbedtls sentinel. */
+        return OPRT_RESOURCE_NOT_READY;
+    }
+    return ret;
 }
 
 /**
@@ -203,6 +229,16 @@ OPERATE_RET tuya_tls_transporter_poll_read(tuya_transporter_t t, int timeout_ms)
     return tuya_transporter_poll_read(tls_transporter->tcp_transporter, timeout_ms);
 }
 
+/* Forwarded so callers can decide whether a DISCONNECT packet can be written
+ * without blocking. Mirrors tcp_transporter: >0 writable, 0 timeout, <0 error. */
+OPERATE_RET tuya_tls_transporter_poll_write(tuya_transporter_t t, int timeout_ms)
+{
+
+    tuya_tls_transporter_t tls_transporter = (tuya_tls_transporter_t)t;
+
+    return tuya_transporter_poll_write(tls_transporter->tcp_transporter, timeout_ms);
+}
+
 /**
  * @brief Controls the TLS transporter.
  *
@@ -239,6 +275,15 @@ OPERATE_RET tuya_tls_transporter_ctrl(tuya_transporter_t t, uint32_t cmd, void *
         *s = (void *)config;
         break;
     }
+    case TUYA_TRANSPORTER_TLS_PENDING: {
+        int *pending = (int *)args;
+        if (pending != NULL) {
+            *pending = tuya_tls_get_pending(tls_transporter->tls_handler);
+        } else {
+            ret = OPRT_INVALID_PARM;
+        }
+        break;
+    }
 
     default: {
         ret = tuya_transporter_ctrl(tls_transporter->tcp_transporter, cmd, args);
@@ -269,7 +314,7 @@ tuya_transporter_t tuya_tls_transporter_create(void)
 
     tuya_transporter_set_func((tuya_transporter_t)&t->base, tuya_tls_transporter_connect, tuya_tls_transporter_close,
                               tuya_tls_transporter_read, tuya_tls_transporter_write, tuya_tls_transporter_poll_read,
-                              NULL, tuya_tls_transporter_destroy, tuya_tls_transporter_ctrl);
+                              tuya_tls_transporter_poll_write, tuya_tls_transporter_destroy, tuya_tls_transporter_ctrl);
     t->tcp_transporter = tuya_tcp_transporter_create();
     t->tls_handler = tuya_tls_connect_create();
     if (t->tls_handler == NULL) {

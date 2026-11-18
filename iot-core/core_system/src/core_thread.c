@@ -45,6 +45,186 @@ typedef struct {
 static DEL_THRD_MAG_S *s_del_thrd_mag = NULL;
 static LIST_HEAD s_all_thrd_mag;
 
+
+/* ---------------------------------------------------------------------------
+ * Thread-local storage (TLS)
+ *
+ * Keys are process-wide; values are per thread. Rows are keyed by
+ * core_thread_get_id(), which every port provides, so no per-port
+ * implementation is needed. Destructors run from __WrapRunFunc() when the
+ * thread exits.
+ * --------------------------------------------------------------------------- */
+#ifndef CORE_THREAD_TLS_ROWS
+#define CORE_THREAD_TLS_ROWS 24
+#endif
+
+typedef struct {
+    int used;
+    THREAD_TLS_DTOR_CB dtor;
+} TLS_KEY_ENTRY;
+
+typedef struct {
+    int used;
+    THREAD_HANDLE owner;
+    void *vals[CORE_THREAD_TLS_KEYS];
+} TLS_ROW;
+
+static TLS_KEY_ENTRY s_tls_keys[CORE_THREAD_TLS_KEYS];
+static TLS_ROW s_tls_rows[CORE_THREAD_TLS_ROWS];
+static MUTEX_HANDLE s_tls_lock = NULL;
+
+static OPERATE_RET __tls_ensure_lock(void)
+{
+    if (s_tls_lock != NULL) {
+        return OPRT_OK;
+    }
+    return core_mutex_create_init(&s_tls_lock);
+}
+
+static THREAD_HANDLE __tls_self(void)
+{
+    THREAD_HANDLE id = NULL;
+
+    (void)core_thread_get_id(&id);
+    return id;
+}
+
+static TLS_ROW *__tls_row(THREAD_HANDLE owner, int create)
+{
+    int i;
+    TLS_ROW *free_row = NULL;
+
+    for (i = 0; i < CORE_THREAD_TLS_ROWS; ++i) {
+        if (s_tls_rows[i].used && s_tls_rows[i].owner == owner) {
+            return &s_tls_rows[i];
+        }
+        if (!s_tls_rows[i].used && free_row == NULL) {
+            free_row = &s_tls_rows[i];
+        }
+    }
+    if (!create || free_row == NULL) {
+        return NULL;
+    }
+    memset(free_row, 0, sizeof(*free_row));
+    free_row->used = 1;
+    free_row->owner = owner;
+    return free_row;
+}
+
+/* Run the destructors of the exiting thread and release its row */
+static void __tls_thread_exit(void)
+{
+    void *vals[CORE_THREAD_TLS_KEYS];
+    THREAD_TLS_DTOR_CB dtors[CORE_THREAD_TLS_KEYS];
+    TLS_ROW *row;
+    int i;
+
+    if (s_tls_lock == NULL) {
+        return;
+    }
+    core_mutex_lock(s_tls_lock);
+    row = __tls_row(__tls_self(), 0);
+    if (row == NULL) {
+        core_mutex_unlock(s_tls_lock);
+        return;
+    }
+    for (i = 0; i < CORE_THREAD_TLS_KEYS; ++i) {
+        vals[i] = row->vals[i];
+        dtors[i] = s_tls_keys[i].used ? s_tls_keys[i].dtor : NULL;
+    }
+    memset(row, 0, sizeof(*row));
+    core_mutex_unlock(s_tls_lock);
+
+    for (i = 0; i < CORE_THREAD_TLS_KEYS; ++i) {
+        if (vals[i] != NULL && dtors[i] != NULL) {
+            dtors[i](vals[i]);
+        }
+    }
+}
+
+OPERATE_RET core_thread_tls_key_create(THREAD_TLS_KEY *key, THREAD_TLS_DTOR_CB dtor)
+{
+    OPERATE_RET ret;
+    int i;
+
+    if (key == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    ret = __tls_ensure_lock();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+    core_mutex_lock(s_tls_lock);
+    for (i = 0; i < CORE_THREAD_TLS_KEYS; ++i) {
+        if (!s_tls_keys[i].used) {
+            s_tls_keys[i].used = 1;
+            s_tls_keys[i].dtor = dtor;
+            *key = (THREAD_TLS_KEY)i;
+            core_mutex_unlock(s_tls_lock);
+            return OPRT_OK;
+        }
+    }
+    core_mutex_unlock(s_tls_lock);
+    return OPRT_COM_ERROR;
+}
+
+OPERATE_RET core_thread_tls_key_delete(THREAD_TLS_KEY key)
+{
+    int i;
+
+    if ((int)key >= CORE_THREAD_TLS_KEYS || s_tls_lock == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    core_mutex_lock(s_tls_lock);
+    s_tls_keys[key].used = 0;
+    s_tls_keys[key].dtor = NULL;
+    for (i = 0; i < CORE_THREAD_TLS_ROWS; ++i) {
+        s_tls_rows[i].vals[key] = NULL;
+    }
+    core_mutex_unlock(s_tls_lock);
+    return OPRT_OK;
+}
+
+OPERATE_RET core_thread_tls_set(THREAD_TLS_KEY key, void *value)
+{
+    OPERATE_RET ret;
+    TLS_ROW *row;
+
+    if ((int)key >= CORE_THREAD_TLS_KEYS) {
+        return OPRT_INVALID_PARM;
+    }
+    ret = __tls_ensure_lock();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+    core_mutex_lock(s_tls_lock);
+    row = __tls_row(__tls_self(), 1);
+    if (row == NULL) {
+        core_mutex_unlock(s_tls_lock);
+        return OPRT_COM_ERROR;
+    }
+    row->vals[key] = value;
+    core_mutex_unlock(s_tls_lock);
+    return OPRT_OK;
+}
+
+void *core_thread_tls_get(THREAD_TLS_KEY key)
+{
+    void *value = NULL;
+    TLS_ROW *row;
+
+    if ((int)key >= CORE_THREAD_TLS_KEYS || s_tls_lock == NULL) {
+        return NULL;
+    }
+    core_mutex_lock(s_tls_lock);
+    row = __tls_row(__tls_self(), 0);
+    if (row != NULL) {
+        value = row->vals[key];
+    }
+    core_mutex_unlock(s_tls_lock);
+    return value;
+}
+
 static void __WrapRunFunc(void *pArg);
 static void __inner_del_thread(THREAD_HANDLE thrdID);
 
@@ -251,6 +431,8 @@ static void __WrapRunFunc(void *pArg)
         PR_DEBUG("exit Thread:%s func call", pThrdManage->thread_name);
         pThrdManage->exit();
     }
+
+    __tls_thread_exit();
     PR_DEBUG("Thread:%s Exec Finish. Set to Del Stat", pThrdManage->thread_name);
     core_mutex_lock(s_del_thrd_mag->mutex);
     pThrdManage->thrdRunSta = THREAD_STATE_DELETE;

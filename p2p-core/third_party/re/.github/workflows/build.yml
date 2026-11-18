@@ -1,0 +1,73 @@
+name: Build
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        build_type: [Release, Debug]
+        compiler: [gcc, clang, gcc-14, clang-21]
+        os: [ubuntu-22.04, ubuntu-24.04, macos-latest]
+        exclude:
+          - os: macos-latest
+            compiler: gcc
+          - os: macos-latest
+            compiler: gcc-14
+          - os: macos-latest
+            compiler: clang-21
+          - os: ubuntu-22.04
+            compiler: gcc-14
+          - os: ubuntu-22.04
+            compiler: clang-21
+    env:
+      CC: ${{ matrix.compiler }}
+      CMAKE_GENERATOR: Ninja
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: openssl path macos
+      if: ${{ runner.os == 'macOS' }}
+      run: |
+        echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl)" >> $GITHUB_ENV
+
+    - name: fix flaky azure mirrors
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo sed -i 's/azure\./de\./' /etc/apt/sources.list
+
+    - name: install packages
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo apt-get update && sudo apt-get install -y ninja-build
+
+    - name: Install clang
+      if: ${{ matrix.compiler == 'clang-21' }}
+      run: |
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main"
+        sudo apt-get update && sudo apt-get install -y clang-21
+
+    - name: make info
+      run: |
+        echo "OS: ${{ matrix.os }}"
+        echo "--- ${{ matrix.compiler }} DEBUG VERSION ---"
+        ${{ matrix.compiler }} - --version
+
+    - name: cmake
+      run: |
+        cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_C_FLAGS="-Werror" -DCMAKE_CXX_FLAGS="-Werror"
+        cmake --build build -t retest
+    
+    - name: retest
+      run: |
+        ./build/test/retest -r -v

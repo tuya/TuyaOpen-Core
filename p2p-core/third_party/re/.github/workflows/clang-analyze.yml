@@ -1,0 +1,32 @@
+name: clang analyze
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  clang-analyze:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: fix flaky azure mirrors
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo sed -i 's/azure\./de\./' /etc/apt/sources.list
+
+    - name: Install clang-tools
+      run: |
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main"
+        sudo apt-get update && sudo apt-get install -y clang-tools-21
+
+    - name: analyze
+      run: | 
+        cmake -B build -DCMAKE_C_COMPILER=clang-21
+        analyze-build-21 --cdb build/compile_commands.json --status-bugs -v

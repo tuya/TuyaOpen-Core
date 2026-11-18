@@ -45,3 +45,17 @@ OPERATE_RET core_netif_set_link_cb(CORE_NETIF_LINK_CHANGE_CB cb)
 {
     CORE_NETIF_EXEC_OP(set_link_cb, OPRT_COM_ERROR, cb);
 }
+
+OPERATE_RET core_netif_foreach(CORE_NETIF_ADDR_CB cb, void *user_data)
+{
+    CORE_NETIF_OPS_T *ops = core_netif_get_ops();
+
+    /* Optional port capability. A port whose platform has no interface list
+     * leaves foreach_addr NULL; callers then fall back to
+     * core_netif_get_ip(). Not having it is not an error, so do not log. */
+    if (NULL == ops || NULL == ops->foreach_addr) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    return ops->foreach_addr(cb, user_data);
+}

@@ -50,6 +50,7 @@ foreach(_tuyaopen_opt IN ITEMS
     ENABLE_AI_PLAYER_DECODER_OGGOPUS
     ENABLE_QRCODE
     LITTLE_END
+    P2P_STACK_WATERMARK_LOG
 )
     if(CONFIG_${_tuyaopen_opt})
         list(APPEND _tuyaopen_switch_defs ${_tuyaopen_opt}=1)
@@ -83,7 +84,7 @@ foreach(_tuyaopen_mod IN ITEMS
     tuya_ai_service
     base_ice
     lib_rtp
-    pjproject
+    libre_p2p
     svc_ipc_core
     svc_streaming_p2p
     local_store

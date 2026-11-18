@@ -45,6 +45,22 @@ CORE_NETIF_OPS_T *core_netif_get_ops(void);
 OPERATE_RET core_netif_get_ip(NW_IP_S *ip);
 
 /**
+ * @brief  Enumerate the local interface addresses (IPv4)
+ *
+ * Optional port capability: a port whose platform has no interface-list API
+ * leaves the ops member NULL and this function returns OPRT_NOT_SUPPORTED;
+ * callers fall back to core_netif_get_ip() in that case.
+ *
+ * @param[in]   cb          callback invoked once per interface address; return
+ *                          true to stop the enumeration
+ * @param[in]   user_data   opaque pointer passed to the callback
+ *
+ * @return OPRT_OK on success, OPRT_NOT_SUPPORTED if the port cannot enumerate.
+ *         Others on error, please refer to tuya_error_code.h
+ */
+OPERATE_RET core_netif_foreach(CORE_NETIF_ADDR_CB cb, void *user_data);
+
+/**
  * @brief  Register a link state change callback (starts an internal 3s
  *         polling thread; repeated calls are idempotent)
  *

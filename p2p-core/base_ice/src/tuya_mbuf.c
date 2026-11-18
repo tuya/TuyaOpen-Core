@@ -23,7 +23,10 @@
 #define TUYA_MBUF_HUGE_SIZE 1600
 #endif
 
-#define TUYA_MBUF_MALLOC(s) core_malloc(s)
+/*
+ * Payloads come from core_p2p_malloc(); descriptors stay on the normal
+ * core heap.
+ */
 #define TUYA_MBUF_CALLOC(n, s) core_calloc(n, s)
 #define TUYA_MBUF_FREE(p) core_free(p)
 
@@ -169,7 +172,7 @@ int tuya_mbuf_queue_get_used_size(tuya_mbuf_queue_t *q)
  * @param[in] q queue
  * @param[in] size requested payload bytes (must fit in HUGE slab)
  * @return mbuf or NULL if budget insufficient / OOM / size too large
- * @note OS charges and allocates TUYA_MBUF_HUGE_SIZE (1600) per call via mem_cache
+ * @note OS charges and allocates TUYA_MBUF_HUGE_SIZE (1600) per call
  */
 tuya_mbuf_t *tuya_mbuf_alloc(tuya_mbuf_queue_t *q, int size)
 {
@@ -190,13 +193,13 @@ tuya_mbuf_t *tuya_mbuf_alloc(tuya_mbuf_queue_t *q, int size)
     core_mutex_unlock(q->lock);
 
     m = (tuya_mbuf_t *)TUYA_MBUF_CALLOC(1, sizeof(*m));
-    buf = (char *)TUYA_MBUF_MALLOC((size_t)TUYA_MBUF_HUGE_SIZE);
+    buf = (char *)core_p2p_malloc((size_t)TUYA_MBUF_HUGE_SIZE);
     if (m == NULL || buf == NULL) {
         if (m != NULL) {
             TUYA_MBUF_FREE(m);
         }
         if (buf != NULL) {
-            TUYA_MBUF_FREE(buf);
+            core_p2p_free(buf);
         }
         core_mutex_lock(q->lock);
         q->used_size -= charge;
@@ -244,7 +247,7 @@ void tuya_mbuf_free(tuya_mbuf_t *m)
     }
     q = m->mbuf_queue;
     charge = TUYA_MBUF_HUGE_SIZE;
-    TUYA_MBUF_FREE(m->base);
+    core_p2p_free(m->base);
     TUYA_MBUF_FREE(m);
     if (q != NULL) {
         core_mutex_lock(q->lock);

@@ -34,7 +34,7 @@ extern "C" {
 /* Uplink verification timeout: wait for the cloud ASR response (15s is ample) */
 #define AGENT_UPLINK_VERIFY_TIMEOUT_MS 15000
 
-/* Upload statistics (used by logs and selftest criteria) */
+/* Upload statistics (used by logs) */
 typedef struct {
     uint32_t frames;           /* number of frames uploaded */
     uint32_t bytes;            /* total bytes uploaded */

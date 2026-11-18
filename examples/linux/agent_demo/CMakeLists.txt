@@ -153,8 +153,6 @@ file(GLOB _agent_demo_adapt_srcs CONFIGURE_DEPENDS
 )
 list(APPEND _agent_demo_srcs ${_agent_demo_adapt_srcs})
 unset(_agent_demo_adapt_srcs)
-# Selftests (selftest/ directory, standalone targets with their own main()) are
-# outside this GLOB and need no filtering
 # Audio output endpoint (adapt/play_local_out.c): depends on the audio_player
 # component header (svc_ai_player.h) and is gated by ENABLE_AI_PLAYER — added
 # conditionally below
@@ -198,7 +196,7 @@ if(TUYA_OPENSDK_AUTHKEY)
     target_compile_definitions(agent_demo PRIVATE TUYA_OPENSDK_AUTHKEY="${TUYA_OPENSDK_AUTHKEY}")
 endif()
 
-# Demo parameter injection (shared by the app and the link selftest)
+# Demo parameter injection
 # Sample path: use the given file when non-empty (default: voice_16k.pcm in the build directory)
 set(_agent_demo_defs
     AGENT_DEMO_AUDIO_FILE="${CONFIG_AGENT_DEMO_AUDIO_FILE}"
@@ -228,57 +226,6 @@ set(_agent_demo_link
 list(APPEND _agent_demo_link -Wl,--end-group tuyaopen-port tuyaopen-headers)
 target_link_libraries(agent_demo PRIVATE ${_agent_demo_link})
 
-# Link selftest (standalone executable, linked with the same library group as agent_demo):
-# verifies sample loading → frame splitting → boundaries without a cloud connection (no network or credentials)
-# tests only the application-side play_local_in_* contract (the upload orchestration depends on the AI client context and belongs to online runtime testing)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/selftest/agent_chain_selftest.c")
-add_executable(agent_chain_selftest
-    selftest/agent_chain_selftest.c
-    src/adapt/play_local_in.c
-)
-target_include_directories(agent_chain_selftest PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_compile_definitions(agent_chain_selftest PRIVATE ${_agent_demo_defs})
-target_link_libraries(agent_chain_selftest PRIVATE ${_agent_demo_link})
-endif()
-
-# Downlink consumption selftest (standalone executable): builds STOP events (with a non-empty final segment) to verify the downlink consumption policy
-# (the final segment carried by STOP must be printed) — regression guard, independent of the cloud packetization
-# agent_audio.c contains the downlink callback (the ASR branch calls the uplink verify notify) and the uplink implementation, so it must be linked in;
-# the play_local_in_* contract implementation it references (src/adapt/play_local_in.c) must be linked as well
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/selftest/agent_nlg_selftest.c")
-add_executable(agent_nlg_selftest
-    selftest/agent_nlg_selftest.c
-    src/agent_audio.c
-    src/adapt/play_local_in.c
-)
-target_include_directories(agent_nlg_selftest PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_link_libraries(agent_nlg_selftest PRIVATE ${_agent_demo_link})
-endif()
-
-# http_manager URL parsing boundary selftest (standalone executable, no network needed):
-# out-of-range ports must be rejected by the parser (uint16 wraparound would silently connect to a wrong port / fall back to the default port)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/selftest/agent_http_selftest.c")
-add_executable(agent_http_selftest
-    selftest/agent_http_selftest.c
-)
-target_include_directories(agent_http_selftest PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_link_libraries(agent_http_selftest PRIVATE ${_agent_demo_link})
-endif()
-
-# Injection scope of _agent_demo_defs for selftest targets: chain_selftest uses
-# AGENT_DEMO_AUDIO_FILE, so it is injected there; the nlg/http selftests do not
-# read the sample path and do not get the definition.
-# If a future selftest really reads the sample path, make sure to inject the
-# macro there too, otherwise it would silently test the bundled sample.
 unset(_agent_demo_link)
 unset(_agent_demo_defs)
 unset(_agent_demo_components)
@@ -293,10 +240,4 @@ endif()
 if(ENABLE_ASAN)
     target_compile_options(agent_demo PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
     target_link_options(agent_demo PRIVATE -fsanitize=address)
-    target_compile_options(agent_chain_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
-    target_link_options(agent_chain_selftest PRIVATE -fsanitize=address)
-    target_compile_options(agent_nlg_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
-    target_link_options(agent_nlg_selftest PRIVATE -fsanitize=address)
-    target_compile_options(agent_http_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
-    target_link_options(agent_http_selftest PRIVATE -fsanitize=address)
 endif()

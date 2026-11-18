@@ -1,0 +1,56 @@
+name: Sanitizers
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  sanitizers:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        sanitizer: [thread, address, undefined]
+    env:
+      CC: clang-20
+      CXX: clang++-20
+      CMAKE_GENERATOR: Ninja
+      CFLAGS: "-fsanitize=${{ matrix.sanitizer }} -fno-sanitize-recover=all -fno-sanitize=function"
+      CXXFLAGS: "-fsanitize=${{ matrix.sanitizer }} -fno-sanitize-recover=all -fno-sanitize=function"
+      ASAN_OPTIONS: fast_unwind_on_malloc=0
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: fix flaky azure mirrors
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo sed -i 's/azure\./de\./' /etc/apt/sources.list
+
+    - name: install packages
+      run: |
+        sudo apt-get update && sudo apt-get install -y ninja-build
+
+    - name: Install clang-tools
+      run: |
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main"
+        sudo apt-get update && sudo apt-get install -y clang-tools-20
+
+    - name: make info
+      run: |
+        echo "OS: ${{ matrix.os }}"
+        clang - --version
+
+    - name: cmake
+      run: |
+        cmake -B build -DHAVE_THREADS= && cmake --build build -j -t retest
+
+    - name: retest
+      run: |
+        ./build/test/retest -av

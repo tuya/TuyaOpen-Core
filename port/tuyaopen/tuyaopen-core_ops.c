@@ -112,8 +112,10 @@ CORE_NETWORK_OPS_T core_network_ops_platform = {
 /* CORE_NETIF_OPS_T: link status and local IP */
 #if defined(ESP_PLATFORM)
 CORE_NETIF_OPS_T core_netif_ops_platform = {
-    .get_ip      = core_netif_esp_get_ip,
-    .set_link_cb = core_netif_esp_set_link_cb,
+    .get_ip       = core_netif_esp_get_ip,
+    .set_link_cb  = core_netif_esp_set_link_cb,
+    /* No interface-list API: enumeration is not supported on this port. */
+    .foreach_addr = NULL,
 };
 #else
 static CORE_NETIF_LINK_CHANGE_CB s_link_cb;
@@ -133,8 +135,10 @@ static OPERATE_RET __set_link_cb(CORE_NETIF_LINK_CHANGE_CB cb)
 
 #if !defined(__linux__)
 CORE_NETIF_OPS_T core_netif_ops_platform = {
-    .get_ip      = tkl_wired_get_ip,
-    .set_link_cb = __set_link_cb,
+    .get_ip       = tkl_wired_get_ip,
+    .set_link_cb  = __set_link_cb,
+    /* No interface-list API: enumeration is not supported on this port. */
+    .foreach_addr = NULL,
 };
 #endif
 #endif

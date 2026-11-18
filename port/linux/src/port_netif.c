@@ -190,6 +190,82 @@ static OPERATE_RET __netif_set_link_cb(CORE_NETIF_LINK_CHANGE_CB cb)
     return OPRT_OK;
 }
 
+/* Fill name/ip/mask of one interface (ioctl SIOCGIFADDR / SIOCGIFNETMASK) */
+static int __netif_read_addr(const char *if_name, CORE_NETIF_ADDR_T *addr)
+{
+    int sock;
+    struct ifreq ifr;
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == -1) {
+        return -1;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, if_name, sizeof(ifr.ifr_name) - 1);
+
+    if (ioctl(sock, SIOCGIFADDR, &ifr) < 0) {
+        close(sock);
+        return -1;
+    }
+    strncpy(addr->name, if_name, sizeof(addr->name) - 1);
+    strncpy(addr->ip, inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr), sizeof(addr->ip) - 1);
+
+    if (ioctl(sock, SIOCGIFNETMASK, &ifr) == 0) {
+        strncpy(addr->mask, inet_ntoa(((struct sockaddr_in *)&ifr.ifr_netmask)->sin_addr),
+                sizeof(addr->mask) - 1);
+    }
+
+    /* The gateway needs a route lookup and the P2P host candidates only need
+     * the address: leave gw empty. */
+    close(sock);
+    return 0;
+}
+
+/* Enumerate up, non-loopback interfaces that carry an IPv4 address. The
+ * callback contract is core_netif_foreach's: returning true stops the walk. */
+static OPERATE_RET __netif_foreach_addr(CORE_NETIF_ADDR_CB cb, void *user_data)
+{
+    struct if_nameindex *name_list;
+    int i;
+    int found = 0;
+
+    if (NULL == cb) {
+        return OPRT_INVALID_PARM;
+    }
+
+    name_list = if_nameindex();
+    if (NULL == name_list) {
+        return OPRT_NOT_FOUND;
+    }
+
+    for (i = 0; name_list[i].if_index != 0; ++i) {
+        CORE_NETIF_ADDR_T addr;
+        CORE_NETIF_LINK_STAT_E status = CORE_NETIF_LINK_DOWN;
+
+        if (is_loopback_interface(name_list[i].if_name)) {
+            continue;
+        }
+        if (__netif_get_status_by_name(name_list[i].if_name, &status) != OPRT_OK ||
+            status != CORE_NETIF_LINK_UP) {
+            continue;
+        }
+
+        memset(&addr, 0, sizeof(addr));
+        if (__netif_read_addr(name_list[i].if_name, &addr) != 0) {
+            continue;
+        }
+
+        found = 1;
+        if (cb(&addr, user_data)) {
+            break;
+        }
+    }
+
+    if_freenameindex(name_list);
+    return found ? OPRT_OK : OPRT_NOT_FOUND;
+}
+
 /* ---------------------------------------------------------------------------
  * Platform ops card: assembled here, referenced by core's core_netif.c for
  * core_netif_* dispatch.
@@ -197,4 +273,5 @@ static OPERATE_RET __netif_set_link_cb(CORE_NETIF_LINK_CHANGE_CB cb)
 CORE_NETIF_OPS_T core_netif_ops_platform = {
     .get_ip = __netif_get_ip,
     .set_link_cb = __netif_set_link_cb,
+    .foreach_addr = __netif_foreach_addr,
 };

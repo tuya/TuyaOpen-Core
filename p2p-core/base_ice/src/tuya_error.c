@@ -1,4 +1,5 @@
 
+#include <inttypes.h>
 #include <stdio.h>
 #include "tuya_error.h"
 
@@ -58,6 +59,6 @@ void tuya_p2p_strerror(int32_t statcode, char *buf, size_t bufsize)
             }
         }
     }
-    snprintf(buf, bufsize, "Unknown tuya p2p error %d", statcode);
+    snprintf(buf, bufsize, "Unknown tuya p2p error %" PRId32, statcode);
     return;
 }

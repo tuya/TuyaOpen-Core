@@ -433,6 +433,16 @@ tuya_iot_client_t *tuya_iot_client_get(void);
 bool tuya_iot_is_connected(void);
 
 /**
+ * @brief Returns the MQTT connection epoch of the IoT client.
+ *
+ * Every successful (re)connect increases the value, so a consumer can detect
+ * a link reset that a boolean "is connected" check would miss.
+ *
+ * @return Current connection epoch; 0 if the client is not initialized.
+ */
+uint32_t tuya_iot_mqtt_conn_epoch(void);
+
+/**
  * @brief Dispatches an event for the Tuya IoT client.
  *
  * This function is responsible for dispatching an event for the Tuya IoT

@@ -1,0 +1,24 @@
+name: Coverity Check
+
+on:
+  push:
+    tags:
+      - "*"
+    branches:
+      - coverity
+    workflow_dispatch:
+
+jobs:
+  coverity:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Prepare
+      run: cmake -B ${{github.workspace}}/build
+    - uses: vapier/coverity-scan-action@v1
+      with:
+        project: 'baresip%2Fre'
+        token: ${{ secrets.COVERITY_SCAN_TOKEN }}
+        command: make -C ${{github.workspace}}/build
+        email: 'hallo@studio-link.de'

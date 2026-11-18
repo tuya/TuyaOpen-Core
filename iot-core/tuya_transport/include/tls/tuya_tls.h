@@ -192,13 +192,13 @@ tuya_tls_config_t *tuya_tls_config_get(tuya_tls_hander p_tls_handler);
  * @param[in] hostname url
  * @param[in] port_num port
  * @param[in] socket_fd fd
- * @param[in] overtime_s connect timeout
+ * @param[in] timeout_ms connect timeout in milliseconds
  *
  * @return OPRT_OK on success. Others on error, please refer to
  * tuya_error_code.h
  */
 OPERATE_RET tuya_tls_connect(tuya_tls_hander p_tls_handler, char *hostname, int port_num, int socket_fd,
-                             int overtime_s);
+                             int timeout_ms);
 
 /**
  * @brief tls write
@@ -223,6 +223,20 @@ int tuya_tls_write(tuya_tls_hander tls_handler, uint8_t *buf, uint32_t len);
  * tuya_error_code.h
  */
 int tuya_tls_read(tuya_tls_hander tls_handler, uint8_t *buf, uint32_t len);
+
+/**
+ * @brief Bytes already decrypted by mbedtls and waiting in its input buffer.
+ *
+ * A poll on the raw socket cannot see these bytes: mbedtls may have read one
+ * record and left one or more application records buffered. Callers that wait
+ * on the socket before reading should check this first.
+ *
+ * @param[in] tls_handler refer to tuya_tls_hander
+ *
+ * @return number of buffered plaintext bytes (>= 0); 0 when none or the
+ *         handler is not connected.
+ */
+int tuya_tls_get_pending(tuya_tls_hander tls_handler);
 
 /**
  * @brief generated random

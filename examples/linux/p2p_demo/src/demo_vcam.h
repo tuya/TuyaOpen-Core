@@ -8,9 +8,15 @@
  * AU index is built; a vcam thread delivers AUs on a 1000/fps ms tick, using
  * absolute timestamps for drift correction (no accumulated sleep error), and
  * loops back to frame 0 at end of file. demo_vcam_request_i_frame() makes the
- * next tick jump to the next IDR AU. close() waits for the thread to exit
- * before freeing the buffer; a timed-out close marks the instance poisoned and
- * refuses a reopen (leak instead of use-after-free).
+ * next tick jump to the next IDR AU. demo_vcam_set_bitrate() switches to a
+ * pre-encoded variant at the next tick (resuming on an IDR), so the demo can
+ * follow the P2P rate control like a real encoder. close() waits for the
+ * thread to exit before freeing the buffer; a timed-out close marks the
+ * instance poisoned and refuses a reopen (leak instead of use-after-free).
+ *
+ * All variants must use the same resolution/profile/fps/GOP and be I/P-only
+ * (no B-frames), with SPS/PPS repeated at every IDR; the demo timestamps AUs
+ * in decode order, so B-frames make playback jump.
  *
  * AU splitting rules (works with and without AUD; the bundled demo_video.264
  * has no AUD):
@@ -36,6 +42,9 @@
 extern "C" {
 #endif
 
+/* Longest sample path kept in the variant table (matches the demo resolver) */
+#define DEMO_VCAM_PATH_LEN 1024
+
 /**
  * @brief Description of one frame (one AU)
  */
@@ -56,13 +65,44 @@ typedef void (*DEMO_VCAM_FRAME_CB)(const DEMO_VCAM_FRAME_T *frame);
  *
  * @param[in] path sample file path (Annex-B H.264; NULL or an empty string returns OPRT_INVALID_PARM)
  * @param[in] fps  frame feed rate (0 returns OPRT_INVALID_PARM)
+ * @param[in] kbps bitrate of the initial sample (reported/used by rate control)
  * @param[in] cb   frame callback (NULL returns OPRT_INVALID_PARM)
  * @return OPRT_OK on success; OPRT_NOT_EXIST when the file does not exist;
  *         OPRT_INVALID_PARM when the file has no AU or the parameters are invalid;
  *         OPRT_COM_ERROR on repeated open, or when the previous close timed out
  *         (the thread could not be stopped, state unrecoverable)
  */
-OPERATE_RET demo_vcam_open(const char *path, uint32_t fps, DEMO_VCAM_FRAME_CB cb);
+OPERATE_RET demo_vcam_open(const char *path, uint32_t fps, uint32_t kbps, DEMO_VCAM_FRAME_CB cb);
+
+/**
+ * @brief Register a pre-encoded rate variant (same resolution/profile/fps/GOP,
+ *        I/P-only). Call before demo_vcam_open(); the table is immutable while
+ *        the vcam thread runs. The SPS/PPS is compared with the base at open
+ *        and incompatible variants are disabled.
+ *
+ * @param[in] kbps target bitrate of the variant
+ * @param[in] path sample file path (copied; max DEMO_VCAM_PATH_LEN bytes)
+ * @return OPRT_OK; OPRT_INVALID_PARM on bad args; OPRT_COM_ERROR when the
+ *         variant table is full or the camera is already open
+ */
+OPERATE_RET demo_vcam_add_variant(uint32_t kbps, const char *path);
+
+/**
+ * @brief Ask the vcam thread to switch to the variant closest to (not above)
+ *        the requested bitrate at its next tick, resuming on an IDR.
+ *
+ * The request is asynchronous: the thread loads the file and swaps the buffer,
+ * so this function is safe to call from the rate-control thread.
+ *
+ * @param[in] kbps requested bitrate
+ * @return OPRT_OK when the switch is queued (or the current variant already
+ *         matches); OPRT_RESOURCE_NOT_READY while a switch is pending or
+ *         during the post-switch hold-down (the core keeps its previous rate
+ *         and retries next window); OPRT_NOT_SUPPORTED when the request is
+ *         below the lowest compatible variant or no variant is registered;
+ *         OPRT_COM_ERROR when not open
+ */
+OPERATE_RET demo_vcam_set_bitrate(uint32_t kbps);
 
 /**
  * @brief Close the virtual camera: stop the thread, free the sample buffer, reset the state
@@ -99,7 +139,7 @@ OPERATE_RET demo_vcam_request_i_frame(void);
 BOOL_T demo_vcam_is_open(void);
 
 /**
- * @brief Query the current index statistics (diagnostics/selftest use; available after a successful open)
+ * @brief Query the current index statistics (diagnostics use; available after a successful open)
  *
  * @param[out] au_num     total AU count
  * @param[out] i_num      IDR AU count

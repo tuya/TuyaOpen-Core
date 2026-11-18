@@ -30,6 +30,7 @@ extern "C" {
 #include "cJSON.h"
 #include "mqtt_client_interface.h"
 #include "backoff_algorithm.h"
+#include "core_mutex.h"
 
 // data max len
 #define TUYA_MQTT_CLIENTID_MAXLEN   (32U)
@@ -160,7 +161,9 @@ typedef void (*mqtt_publish_notify_cb_t)(int result, void *user_data);
 typedef struct mqtt_publish_handle {
     struct mqtt_publish_handle *next;
     uint16_t msgid;
-    int timeout;
+    /* Absolute deadline on the millisecond uptime clock
+     * (core_system_get_millisecond), so a cloud time sync cannot move it. */
+    uint64_t timeout;
     char *topic;
     uint8_t *payload;
     size_t payload_length;
@@ -174,12 +177,24 @@ typedef struct {
     tuya_protocol_handle_t *protocol_list;
     mqtt_subscribe_handle_t *subscribe_list;
     mqtt_publish_handle_t *publish_list;
+    /* Guards publish_list (publisher thread append vs. cloud task drain/PUBACK
+     * vs. disconnect reset). Never held across mqtt_client_publish() or a
+     * user callback. */
+    MUTEX_HANDLE publish_mutex;
     BackoffAlgorithmContext_t backoff_algorithm;
     uint32_t sequence_in;
     uint32_t sequence_out;
+    /* Cross-thread flags: written by the application thread in
+     * tuya_mqtt_start/stop/destory and read by the cloud task in
+     * tuya_mqtt_loop. Access them through the atomic macros in
+     * mqtt_service.c (MQTT_IS_INITED/MQTT_MANUAL_DISC/MQTT_IS_CONNECTED). */
     bool manual_disconnect;
     bool is_inited;
     bool is_connected;
+    /* Bumped on every successful CONNECT (including reconnects). Readers use
+     * tuya_mqtt_conn_epoch() to detect a link reset that happened between two
+     * samples, which a boolean "is connected" poll can miss. */
+    uint32_t conn_epoch;
     void *user_data;
     void (*on_connected)(void *context, void *user_data);
     void (*on_disconnect)(void *context, void *user_data);
@@ -205,6 +220,8 @@ int tuya_mqtt_init(tuya_mqtt_context_t *context, const tuya_mqtt_config_t *confi
  *
  * @param context The MQTT context to be used for starting the service.
  * @return Returns 0 on success, or a negative error code on failure.
+ * @note Start/stop are single-owner: do not call them concurrently with each
+ * other (the manual_disconnect flag has a single writer).
  */
 int tuya_mqtt_start(tuya_mqtt_context_t *context);
 
@@ -215,6 +232,8 @@ int tuya_mqtt_start(tuya_mqtt_context_t *context);
  *
  * @param context Pointer to the MQTT context.
  * @return Returns 0 on success, or a negative error code on failure.
+ * @note Start/stop are single-owner: do not call them concurrently with each
+ * other (the manual_disconnect flag has a single writer).
  */
 int tuya_mqtt_stop(tuya_mqtt_context_t *context);
 
@@ -250,6 +269,19 @@ int tuya_mqtt_destory(tuya_mqtt_context_t *context);
  * @return `true` if the MQTT connection is established, `false` otherwise.
  */
 bool tuya_mqtt_connected(tuya_mqtt_context_t *context);
+
+/**
+ * @brief Returns a counter that increases on every successful MQTT CONNECT.
+ *
+ * The value is reset to 0 by tuya_mqtt_init(). A consumer that wants to know
+ * whether the link was re-established since it last looked should compare the
+ * current value with the one it saved: a change means a new connection, even
+ * if a disconnect and reconnect both happened between the two reads.
+ *
+ * @param context Pointer to the MQTT context.
+ * @return Current connection epoch (monotonically increasing, wraps at 2^32).
+ */
+uint32_t tuya_mqtt_conn_epoch(tuya_mqtt_context_t *context);
 
 /**
  * @brief Registers a MQTT protocol with the given context.

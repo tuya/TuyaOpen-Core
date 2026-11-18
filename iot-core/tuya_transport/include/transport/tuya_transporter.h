@@ -36,6 +36,9 @@ extern "C" {
 #define TUYA_TRANSPORTER_SET_WEBSOCKET_CONFIG 0x0004
 #define TUYA_TRANSPORTER_SET_TLS_CONFIG       0x0005
 #define TUYA_TRANSPORTER_GET_TLS_CONFIG       0x0006
+/* Query bytes already decrypted and buffered inside TLS, without touching the
+ * socket: int *pending; 0 when nothing is buffered or the transport is not TLS. */
+#define TUYA_TRANSPORTER_TLS_PENDING          0x0007
 
 struct socket_config_t {
     uint8_t isBlock;
@@ -249,6 +252,21 @@ OPERATE_RET tuya_transporter_write(tuya_transporter_t transporter, uint8_t *buf,
  *         - Other error codes: An error occurred during the operation.
  */
 OPERATE_RET tuya_transporter_poll_read(tuya_transporter_t transporter, int timeout_ms);
+
+/**
+ * @brief Waits until the transporter can accept a write, or the timeout expires.
+ *
+ * Same return convention as poll_read on the TCP/TLS transporters:
+ * > 0 writable, 0 timeout, < 0 socket error. Used to avoid blocking a
+ * disconnect on a dead socket.
+ *
+ * @param transporter The transporter to poll.
+ * @param timeout_ms Timeout in milliseconds. Must be >= 1: 0 means "wait
+ *                   forever" in core_net_select. Use 1 for a non-blocking
+ *                   probe.
+ * @return The result of the poll.
+ */
+OPERATE_RET tuya_transporter_poll_write(tuya_transporter_t transporter, int timeout_ms);
 
 /**
  * @brief Closes the specified transporter.

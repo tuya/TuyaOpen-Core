@@ -1,0 +1,44 @@
+name: Fedora
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    container: fedora
+
+    strategy:
+      matrix:
+        compiler: [clang]
+        os: [ubuntu-latest]
+
+    env:
+      CC: ${{ matrix.compiler }}
+      CMAKE_GENERATOR: Ninja
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: install devel tools
+      run: |
+        yum -y install gcc clang cmake make openssl-devel zlib-devel ninja-build
+
+    - name: make info
+      run: |
+        echo "OS: ${{ matrix.os }}"
+        echo "--- ${{ matrix.compiler }} DEBUG VERSION ---"
+        ${{ matrix.compiler }} - --version
+        cmake --version
+
+    - name: make
+      run: |
+        cmake -B build -DCMAKE_C_FLAGS="-Werror" && cmake --build build -j 16 -t retest
+
+    - name: retest
+      run: |
+        ./build/test/retest -r -v

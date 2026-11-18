@@ -30,7 +30,7 @@ menu "TuyaOpen-Core"
         bool "LITTLE_END: Target is little-endian"
         default y
         help
-            Target byte order, consumed by the pjproject port (mapped to
+            Target byte order, consumed by the P2P ICE stack (mapped to
             PJ_IS_LITTLE_ENDIAN). Leave on for the Linux port.
 
 endmenu

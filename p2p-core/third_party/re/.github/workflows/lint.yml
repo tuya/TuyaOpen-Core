@@ -1,0 +1,25 @@
+name: lint
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  lint:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: ccheck
+      run: |
+        wget "https://raw.githubusercontent.com/baresip/baresip/main/test/ccheck.py"
+        python3 ccheck.py
+    - name: CMakeLint
+      run: |
+        pip install cmakelint
+        find . -name "CMakeLists.txt" -exec ~/.local/bin/cmakelint {} +

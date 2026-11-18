@@ -24,8 +24,10 @@
 #define RBUF_CHANNEL_MAX 1
 #define RBUF_STREAM_MAX ((int)E_IPC_STREAM_MAX)
 
-#define RBUF_MALLOC(s) core_malloc(s)
-#define RBUF_FREE(p) core_free(p)
+/*
+ * A slot holds one encoded frame (up to 300 KiB). Slots use
+ * core_p2p_malloc().
+ */
 
 /* ---------------------------------------------------------------------------
  * Type definitions
@@ -137,11 +139,11 @@ OPERATE_RET tuya_ipc_ring_buffer_init(int device, int channel, IPC_STREAM_E stre
         return rt;
     }
     for (i = 0; i < st->slot_cnt; i++) {
-        st->nodes[i].raw_data = (uint8_t *)RBUF_MALLOC(st->max_frame_size);
+        st->nodes[i].raw_data = (uint8_t *)core_p2p_malloc(st->max_frame_size);
         if (st->nodes[i].raw_data == NULL) {
             uint32_t j;
             for (j = 0; j < i; j++) {
-                RBUF_FREE(st->nodes[j].raw_data);
+                core_p2p_free(st->nodes[j].raw_data);
                 st->nodes[j].raw_data = NULL;
             }
             core_mutex_release(st->lock);
@@ -174,7 +176,7 @@ OPERATE_RET tuya_ipc_ring_buffer_uninit(int device, int channel, IPC_STREAM_E st
     core_mutex_lock(st->lock);
     for (i = 0; i < st->slot_cnt; i++) {
         if (st->nodes[i].raw_data != NULL) {
-            RBUF_FREE(st->nodes[i].raw_data);
+            core_p2p_free(st->nodes[i].raw_data);
             st->nodes[i].raw_data = NULL;
         }
     }

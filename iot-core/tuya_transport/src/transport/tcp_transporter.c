@@ -16,6 +16,7 @@
 #include "tuya_cloud_types.h"
 #include "core_network.h"
 #include "core_api.h"
+#include "core_system.h"
 #include "core_network.h"
 #include "tuya_transporter.h"
 #include "tcp_transporter.h"
@@ -92,7 +93,7 @@ OPERATE_RET tuya_tcp_transporter_connect(tuya_transporter_t t, const char *host,
     }
 
     // Bind outbound traffic to the interface the link manager selected, so it
-    // leaves the right one on a multi-interface target. On Linux host builds keep
+    // leaves the right one on a multi-interface target. Host builds keep
     // default routing unless the caller asked for a bind.
     //
     // config.bindAddr is the caller's setting and is never written back to: the
@@ -272,9 +273,15 @@ OPERATE_RET tuya_tcp_transporter_poll_write(tuya_transporter_t t, int timeout_ms
     TUYA_FD_SET_T writefd;
     tuya_tcp_transporter_t tcp_transporter = (tuya_tcp_transporter_t)t;
 
+    if (tcp_transporter->socket_fd < 0) {
+        return OPRT_INVALID_PARM;
+    }
+
     core_net_fd_zero(&writefd);
     core_net_fd_set(tcp_transporter->socket_fd, &writefd);
 
+    /* core_net_select(0) means "wait forever"; callers that want a
+     * non-blocking check must pass at least 1 ms. */
     return core_net_select(tcp_transporter->socket_fd + 1, NULL, &writefd, NULL, timeout_ms);
 }
 
@@ -299,8 +306,16 @@ OPERATE_RET tuya_tcp_transporter_read(tuya_transporter_t t, uint8_t *buf, int le
     }
 
     int ret = 0;
+    uint64_t t0 = core_system_get_millisecond();
     if (timeout_ms > 0) {
         ret = tuya_tcp_transporter_poll_read(t, timeout_ms);
+    }
+    uint64_t waited = core_system_get_millisecond() - t0;
+
+    if ((timeout_ms > 0) && (waited > (uint64_t)timeout_ms + 100ULL)) {
+        /* select/poll should never return later than its own timeout; this
+         * catches a caller-visible stall that is not "no data". */
+        PR_WARN("tcp poll overran %ums (timeout %d) ready=%d", (unsigned)waited, timeout_ms, ret);
     }
 
     if (ret < 0) {
@@ -311,7 +326,12 @@ OPERATE_RET tuya_tcp_transporter_read(tuya_transporter_t t, uint8_t *buf, int le
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    return core_net_recv(tcp_transporter->socket_fd, buf, len);
+    uint64_t t1 = core_system_get_millisecond();
+    int read_ret = core_net_recv(tcp_transporter->socket_fd, buf, len);
+    if (core_system_get_millisecond() - t1 >= 500ULL) {
+        PR_WARN("tcp recv took %ums (len %d) ret=%d", (unsigned)(core_system_get_millisecond() - t1), len, read_ret);
+    }
+    return read_ret;
 }
 
 /**

@@ -28,6 +28,15 @@ extern "C" {
 #define Calloc(req_count, req_size)  core_calloc(req_count, req_size)
 #define Free(ptr)                    core_free(ptr)
 
+/*
+ * P2P large media buffers (media frame, ring slots, KCP mbuf payloads).
+ * They use the normal core heap; the platform allocator decides placement.
+ * The aliases stay so the P2P sources do not need per-file MALLOC/FREE
+ * macros.
+ */
+#define core_p2p_malloc(size) core_malloc(size)
+#define core_p2p_free(ptr)    core_free(ptr)
+
 /***********************************************************************
  ********************* struct ******************************************
  **********************************************************************/

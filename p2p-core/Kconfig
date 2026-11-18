@@ -6,6 +6,42 @@ menu "Configure Tuya P2P Service"
         help
             Enable Tuya P2P (ICE/RTP/streaming) and optional local media helpers.
 
+    config P2P_STACK_WATERMARK_LOG
+        bool "P2P_STACK_WATERMARK_LOG: log thread stack high-water marks"
+        depends on ENABLE_TUYA_P2P
+        default n
+        help
+            Log each P2P thread's stack high-water mark after it settles.
+
+    if ENABLE_TUYA_P2P
+    menu "P2P thread stack sizes"
+        config P2P_LISTEN_STACK_SIZE
+            int "P2P listen thread stack size (bytes)"
+            default 4096
+            range 2048 65536
+
+        config P2P_CMD_RECV_STACK_SIZE
+            int "P2P command receive thread stack size (bytes)"
+            default 4096
+            range 2048 65536
+
+        config P2P_MEDIA_SEND_STACK_SIZE
+            int "P2P media send thread stack size (bytes)"
+            default 4096
+            range 2048 65536
+
+        config P2P_CTX_SIG_STACK_SIZE
+            int "P2P signaling worker stack size (bytes)"
+            default 10240
+            range 2048 65536
+
+        config P2P_RTC_WORKER_STACK_SIZE
+            int "P2P RTC worker stack size (bytes)"
+            default 10240
+            range 2048 65536
+    endmenu
+    endif
+
     rsource "local_store/Kconfig"
     rsource "svc_ring_buffer/Kconfig"
 endmenu

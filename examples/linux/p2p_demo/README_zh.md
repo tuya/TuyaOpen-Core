@@ -49,12 +49,26 @@ cd build && ./p2p_demo
 | `P2P_DEMO_WIDTH` | 上报给 App 的视频宽度（像素）；必须与视频源一致 | 2304 |
 | `P2P_DEMO_HEIGHT` | 上报给 App 的视频高度（像素）；必须与视频源一致 | 1296 |
 | `P2P_DEMO_FPS` | 虚拟摄像头喂帧帧率，同时上报给 App | 15 |
-| `P2P_DEMO_KBPS` | 上报给 App 的目标码率（视频源不参与码率控制） | 960 |
+| `P2P_DEMO_KBPS` | 基准视频码率；demo 用预编码变体（500/450/350/250 kbps）跟随 p2p rate control | 960 |
 | `P2P_DEMO_GOP` | 上报给 App 的 GOP 长度（自带视频的 GOP 为 60） | 60 |
 | `P2P_DEMO_H264_FILE` | 实时视频源路径；为空时使用自带视频 | "" |
 | `P2P_DEMO_LIVE_RECORD` | 直播过程中持续写入 local_store（按分段切分） | n |
 | `P2P_DEMO_RECORD_MAX_SEC` | 单个录像分段的最大时长（秒，30-3600） | 120 |
 | `P2P_DEMO_PB_SEED` | 启动时用实时视频源播种当天的索引，便于在没有录像时尝试回放 | n |
+
+码率变体用 `tools/gen_demo_variants.sh` 生成。脚本默认输出 960×540、550 kbps
+基准和 500/450/350/250 kbps 变体；构建时需匹配：
+
+```bash
+cmake -B build -DCONFIG_P2P_DEMO_WIDTH=960 -DCONFIG_P2P_DEMO_HEIGHT=540 \
+      -DCONFIG_P2P_DEMO_KBPS=550
+examples/linux/p2p_demo/tools/gen_demo_variants.sh \
+      examples/linux/p2p_demo/assets/demo_video.264 build 960 540
+```
+
+脚本会覆盖 `build/demo_video.264` 作为 550 基准；所有变体必须与基准的
+SPS/PPS 字节一致，否则 vcam 在 open 时禁用该变体（防止分辨率/profile 中途变化）。
+重新执行 CMake configure 会再次复制原始素材，需要重新运行脚本。
 
 menuconfig 用法（`P2P_DEMO` 没有提示项；不想构建本示例时不要勾选它即可，
 无需把它关掉）：
@@ -75,23 +89,6 @@ cmake -B build -DCONFIG_P2P_DEMO_H264_FILE=/path/to/your.h264
 
 注意：本 demo 自己目录下的 `.config` 会被其 CMake 读取；一旦存在即优先使用，
 删除后回到内置默认值。
-
-## 自测
-
-两个独立可执行文件，不需要云端，也不需要 App（在示例目录下运行）：
-
-```bash
-./build/vcam_selftest
-./build/media_chain_selftest
-```
-
-- `vcam_selftest`：打开视频源并校验 AU 索引与喂帧时序；期望输出
-  `VCAM SELFTEST PASSED`（80 帧、时间戳步进 66ms、2 个 I 帧）。
-- `media_chain_selftest`：跑通整条媒体链路（vcam -> 帧校验/队列/环形缓冲区
-  -> P2P 取帧回调）并验证“请求 I 帧”；期望输出
-  `MEDIA CHAIN SELFTEST PASSED`（4 秒内 60 帧、时间戳单调递增、请求与下一个
-  I 帧之间最多 8 帧——通常 1~2 帧，而被忽略的请求要等约 59 个 P 帧）。视频源
-  缺失时会提示 `sample not found: run from build/ ...`。
 
 ## 视频源
 
@@ -180,9 +177,6 @@ cmake --build build-ls -j$(nproc)
     |   |   -- fs_card.c            # 文件系统卡（core_fs_ops；local_store 使用）
     |   -- tuya_config.h            # PID/UUID/AuthKey（可被 secrets 或 -D 覆盖）
     |   -- tuya_config_secrets.h.example  # 凭据覆盖模板
-    +- selftest                      # 离线自测（独立目标，不依赖云端；见“自测”）
-    |   -- demo_vcam_selftest.c     # vcam 自测（目标 vcam_selftest）
-    |   -- media_chain_selftest.c   # 媒体链路自测（目标 media_chain_selftest）
     -- CMakeLists.txt
     -- Kconfig                      # P2P_DEMO* 选项
 ```

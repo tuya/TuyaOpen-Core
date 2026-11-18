@@ -292,6 +292,18 @@ static void on_subscribe_message_default(uint16_t msgid, const mqtt_client_messa
 /* -------------------------------------------------------------------------- */
 /*                         MQTT Client event callback                         */
 /* -------------------------------------------------------------------------- */
+/* Cross-thread flags: written by the application thread (start/stop/destroy),
+ * read by the cloud task. Access them with atomics so TSan/lock-free readers
+ * see a consistent value. */
+#define MQTT_IS_INITED(c)          __atomic_load_n(&(c)->is_inited, __ATOMIC_ACQUIRE)
+#define MQTT_SET_INITED(c, v)      __atomic_store_n(&(c)->is_inited, (v), __ATOMIC_RELEASE)
+#define MQTT_MANUAL_DISC(c)        __atomic_load_n(&(c)->manual_disconnect, __ATOMIC_ACQUIRE)
+#define MQTT_SET_MANUAL_DISC(c, v) __atomic_store_n(&(c)->manual_disconnect, (v), __ATOMIC_RELEASE)
+#define MQTT_IS_CONNECTED(c)       __atomic_load_n(&(c)->is_connected, __ATOMIC_ACQUIRE)
+#define MQTT_SET_CONNECTED(c, v)   __atomic_store_n(&(c)->is_connected, (v), __ATOMIC_RELEASE)
+#define MQTT_CONN_EPOCH(c)         __atomic_load_n(&(c)->conn_epoch, __ATOMIC_ACQUIRE)
+#define MQTT_BUMP_CONN_EPOCH(c)    __atomic_add_fetch(&(c)->conn_epoch, 1, __ATOMIC_RELEASE)
+
 static void mqtt_client_connected_cb(void *client, void *userdata)
 {
     client = client;
@@ -301,7 +313,10 @@ static void mqtt_client_connected_cb(void *client, void *userdata)
     tuya_mqtt_subscribe_message_callback_register(context, context->signature.topic_in, on_subscribe_message_default,
                                                   userdata);
     PR_DEBUG("SUBSCRIBE sent for topic %s to broker.", context->signature.topic_in);
-    context->is_connected = true;
+    MQTT_SET_CONNECTED(context, true);
+    /* Signal the new link before any user callback so a consumer that saves
+     * the epoch in on_connected never sees a stale value. */
+    (void)MQTT_BUMP_CONN_EPOCH(context);
     if (context->on_connected) {
         context->on_connected(context, context->user_data);
     }
@@ -312,7 +327,19 @@ static void mqtt_client_disconnected_cb(void *client, void *userdata)
     client = client;
     tuya_mqtt_context_t *context = (tuya_mqtt_context_t *)userdata;
     PR_INFO("mqtt client disconnected!");
-    context->is_connected = false;
+    MQTT_SET_CONNECTED(context, false);
+
+    /* The broker forgot our in-flight QoS1 publishes with the old session.
+     * Clear their msgids so the event loop republishes them after reconnect;
+     * entries currently inside mqtt_client_publish() are left alone. */
+    if (context->publish_mutex != NULL) {
+        core_mutex_lock(context->publish_mutex);
+        for (mqtt_publish_handle_t *entry = context->publish_list; entry != NULL; entry = entry->next) {
+            entry->msgid = 0;
+        }
+        core_mutex_unlock(context->publish_mutex);
+    }
+
     if (context->on_disconnect) {
         context->on_disconnect(context, context->user_data);
     }
@@ -339,22 +366,31 @@ static void mqtt_client_puback_cb(void *client, uint16_t msgid, void *userdata)
 {
     client = client;
     tuya_mqtt_context_t *context = (tuya_mqtt_context_t *)userdata;
+    mqtt_publish_handle_t *entry = NULL;
     PR_DEBUG("PUBACK ID:%d", msgid);
 
-    /* LOCK */
-    /* publish async process */
+    /* Unlink under the list lock; invoke the user callback after unlocking
+     * (it may publish, which takes the MQTT lock and can be slow). */
+    if (context->publish_mutex != NULL) {
+        core_mutex_lock(context->publish_mutex);
+    }
     mqtt_publish_handle_t **next_handle = &context->publish_list;
     for (; *next_handle; next_handle = &(*next_handle)->next) {
-        mqtt_publish_handle_t *entry = *next_handle;
-        if (msgid == entry->msgid) {
-            entry->cb(OPRT_OK, entry->user_data);
+        if (msgid == (*next_handle)->msgid) {
+            entry = *next_handle;
             *next_handle = entry->next;
-            core_free(entry->payload);
-            core_free(entry);
             break;
         }
     }
-    /* UNLOCK */
+    if (context->publish_mutex != NULL) {
+        core_mutex_unlock(context->publish_mutex);
+    }
+
+    if (entry != NULL) {
+        entry->cb(OPRT_OK, entry->user_data);
+        core_free(entry->payload);
+        core_free(entry);
+    }
 }
 
 /**
@@ -375,6 +411,14 @@ int tuya_mqtt_init(tuya_mqtt_context_t *context, const tuya_mqtt_config_t *confi
     /* Clean to zero */
     memset(context, 0, sizeof(tuya_mqtt_context_t));
 
+    /* Keep the event loop from touching publish_list while the caller (app
+     * thread or cloud task) appends/removes entries. */
+    rt = core_mutex_create_init(&context->publish_mutex);
+    if (OPRT_OK != rt) {
+        PR_ERR("publish mutex create failed:%d", rt);
+        return rt;
+    }
+
     /* configuration */
     context->user_data = config->user_data;
     context->on_unbind = config->on_unbind;
@@ -393,6 +437,8 @@ int tuya_mqtt_init(tuya_mqtt_context_t *context, const tuya_mqtt_config_t *confi
         &context->signature);
     if (OPRT_OK != rt) {
         PR_ERR("mqtt token sign error:%d", rt);
+        core_mutex_release(context->publish_mutex);
+        context->publish_mutex = NULL;
         return rt;
     }
 
@@ -400,6 +446,8 @@ int tuya_mqtt_init(tuya_mqtt_context_t *context, const tuya_mqtt_config_t *confi
     context->mqtt_client = mqtt_client_new();
     if (context->mqtt_client == NULL) {
         PR_ERR("mqtt client new fault.");
+        core_mutex_release(context->publish_mutex);
+        context->publish_mutex = NULL;
         return OPRT_MALLOC_FAILED;
     }
 
@@ -422,6 +470,11 @@ int tuya_mqtt_init(tuya_mqtt_context_t *context, const tuya_mqtt_config_t *confi
     mqtt_status = mqtt_client_init(context->mqtt_client, &mqtt_config);
     if (mqtt_status != MQTT_STATUS_SUCCESS) {
         PR_ERR("MQTT init failed: Status = %d.", mqtt_status);
+        /* Do not mqtt_client_free() here: init may have registered the context
+         * and created the transport, and free() would leave a dangling
+         * registry entry. The caller treats init failure as terminal. */
+        core_mutex_release(context->publish_mutex);
+        context->publish_mutex = NULL;
         return OPRT_COM_ERROR;
     }
 
@@ -433,8 +486,8 @@ int tuya_mqtt_init(tuya_mqtt_context_t *context, const tuya_mqtt_config_t *confi
     context->sequence_in = -1;
 
     /* Wait start task */
-    context->is_inited = true;
-    context->manual_disconnect = true;
+    MQTT_SET_INITED(context, true);
+    MQTT_SET_MANUAL_DISC(context, true);
     return OPRT_OK;
 }
 
@@ -447,15 +500,17 @@ int tuya_mqtt_init(tuya_mqtt_context_t *context, const tuya_mqtt_config_t *confi
  * @param context The MQTT context containing the necessary configuration
  * parameters.
  * @return Returns 0 on success, or a negative error code on failure.
+ * @note Start/stop are single-owner: do not call them concurrently with each
+ * other (the manual_disconnect flag has a single writer).
  */
 int tuya_mqtt_start(tuya_mqtt_context_t *context)
 {
-    if (context == NULL || context->is_inited == false) {
+    if (context == NULL || MQTT_IS_INITED(context) == false) {
         return OPRT_INVALID_PARM;
     }
 
     PR_INFO("tuya_mqtt_start...");
-    context->manual_disconnect = false;
+    MQTT_SET_MANUAL_DISC(context, false);
 
     mqtt_client_status_t mqtt_status;
 
@@ -497,9 +552,14 @@ int tuya_mqtt_start(tuya_mqtt_context_t *context)
  */
 int tuya_mqtt_stop(tuya_mqtt_context_t *context)
 {
-    if (context == NULL || context->is_inited == false) {
+    if (context == NULL || MQTT_IS_INITED(context) == false) {
         return OPRT_INVALID_PARM;
     }
+
+    /* Set before anything that can block: otherwise the cloud task can see
+     * manual_disconnect==false, is_connected==false and reconnect right after
+     * this returns. */
+    MQTT_SET_MANUAL_DISC(context, true);
 
     int ret = tuya_mqtt_subscribe_message_callback_unregister(context, context->signature.topic_in);
     PR_DEBUG("MQTT unsubscribe result:%d", ret);
@@ -508,7 +568,6 @@ int tuya_mqtt_stop(tuya_mqtt_context_t *context)
     mqtt_status = mqtt_client_disconnect(context->mqtt_client);
     PR_DEBUG("MQTT disconnect result:%d", mqtt_status);
 
-    context->manual_disconnect = true;
     return OPRT_OK;
 }
 
@@ -530,7 +589,7 @@ int tuya_mqtt_stop(tuya_mqtt_context_t *context)
 int tuya_mqtt_protocol_register(tuya_mqtt_context_t *context, uint16_t protocol_id, tuya_protocol_callback_t cb,
                                 void *user_data)
 {
-    if (context == NULL || context->is_inited == false || cb == NULL) {
+    if (context == NULL || MQTT_IS_INITED(context) == false || cb == NULL) {
         return OPRT_INVALID_PARM;
     }
 
@@ -572,7 +631,7 @@ int tuya_mqtt_protocol_register(tuya_mqtt_context_t *context, uint16_t protocol_
  */
 int tuya_mqtt_protocol_unregister(tuya_mqtt_context_t *context, uint16_t protocol_id, tuya_protocol_callback_t cb)
 {
-    if (context == NULL || context->is_inited == false || cb == NULL) {
+    if (context == NULL || MQTT_IS_INITED(context) == false || cb == NULL) {
         return OPRT_INVALID_PARM;
     }
 
@@ -593,6 +652,38 @@ int tuya_mqtt_protocol_unregister(tuya_mqtt_context_t *context, uint16_t protoco
     return OPRT_OK;
 }
 
+/* Free the protocol list. Does not check MQTT_IS_INITED: destroy() calls this
+ * after mqtt_client_free() has waited for every in-flight yield/on_message to
+ * exit, so the cloud task can no longer traverse the list. */
+static void __mqtt_protocol_free_all(tuya_mqtt_context_t *context)
+{
+    tuya_protocol_handle_t *entry = NULL;
+    tuya_protocol_handle_t *target = context->protocol_list;
+
+    while (target) {
+        entry = target;
+        target = entry->next;
+        core_free(entry);
+    }
+    context->protocol_list = NULL;
+}
+
+/* Same lifetime rule as __mqtt_protocol_free_all: called after the MQTT
+ * client has drained its callbacks. Frees the nodes and their copied topics. */
+static void __mqtt_subscribe_free_all(tuya_mqtt_context_t *context)
+{
+    mqtt_subscribe_handle_t *entry = context->subscribe_list;
+
+    while (entry) {
+        mqtt_subscribe_handle_t *next = entry->next;
+
+        core_free(entry->topic);
+        core_free(entry);
+        entry = next;
+    }
+    context->subscribe_list = NULL;
+}
+
 /**
  * Unregisters all MQTT protocols from the given MQTT context.
  *
@@ -603,23 +694,12 @@ int tuya_mqtt_protocol_unregister(tuya_mqtt_context_t *context, uint16_t protoco
  */
 int tuya_mqtt_protocol_unregister_all(tuya_mqtt_context_t *context)
 {
-    if (context == NULL || context->is_inited == false) {
+    if (context == NULL || MQTT_IS_INITED(context) == false) {
         return OPRT_INVALID_PARM;
     }
 
     PR_DEBUG("Unregister all MQTT Protocol");
-    /* LOCK */
-    /* Remove object form list */
-    tuya_protocol_handle_t *entry = NULL;
-    tuya_protocol_handle_t *target = context->protocol_list;
-    while (target) {
-        entry = target;
-        target = entry->next;
-        core_free(entry);
-    }
-    /* UNLOCK */
-
-    context->protocol_list = NULL;
+    __mqtt_protocol_free_all(context);
 
     return OPRT_OK;
 }
@@ -662,7 +742,11 @@ int tuya_mqtt_client_publish_common(tuya_mqtt_context_t *context, const char *to
     handle->next = NULL;
     handle->msgid = 0;
     handle->topic = (char *)topic;
-    handle->timeout = core_time_get_posix() + timeout_ms;
+    /* core_system_get_millisecond is monotonic uptime: a cloud time sync must
+     * not expire (or extend) a pending publish. 0/negative keeps the old
+     * practical default of a 5 s wait instead of expiring on the next loop. */
+    handle->timeout = (uint64_t)core_system_get_millisecond() +
+                      (uint64_t)((timeout_ms > 0) ? timeout_ms : 5000);
     handle->cb = cb;
     handle->user_data = user_data;
     handle->payload_length = payload_length;
@@ -682,18 +766,35 @@ int tuya_mqtt_client_publish_common(tuya_mqtt_context_t *context, const char *to
         handle->msgid = mqtt_client_publish(context->mqtt_client, handle->topic, handle->payload,
                                             handle->payload_length, MQTT_QOS_1);
         tuya_dev_evt_notify(DEV_EVT_MQTT_PUBLISH, ACTION_AFTER, NULL);
+    } else if (MQTT_IS_CONNECTED(context)) {
+        /* The receive loop can now sleep up to MQTT_IDLE_POLL_MS in the
+         * lock-free poll. An async entry that waited for the next loop
+         * iteration would delay DP by up to a period, so publish it here.
+         * NOTE: this takes the MQTT lock on the caller thread and can block
+         * up to the TLS write timeout; without a platform wakeup primitive it
+         * is the price of removing the poll-period delay. If the link drops
+         * meanwhile (msgid 0) the loop's drain republishes it. */
+        handle->msgid = mqtt_client_publish(context->mqtt_client, handle->topic, handle->payload,
+                                            handle->payload_length, MQTT_QOS_1);
     }
 
+    /* Append under the list lock: the event loop walks and unlinks the same
+     * list, and a PUBACK callback may remove an entry at any time. */
+    if (context->publish_mutex != NULL) {
+        core_mutex_lock(context->publish_mutex);
+    }
     if (context->publish_list == NULL) {
         context->publish_list = handle;
-        return OPRT_OK;
+    } else {
+        mqtt_publish_handle_t *last = context->publish_list;
+        while (last->next != NULL) {
+            last = last->next;
+        }
+        last->next = handle;
     }
-
-    mqtt_publish_handle_t *last = context->publish_list;
-    while (last->next != NULL) {
-        last = last->next;
+    if (context->publish_mutex != NULL) {
+        core_mutex_unlock(context->publish_mutex);
     }
-    last->next = handle;
 
     return OPRT_OK;
 }
@@ -720,11 +821,11 @@ int tuya_mqtt_protocol_data_publish_with_topic_common(tuya_mqtt_context_t *conte
                                                       mqtt_publish_notify_cb_t cb, void *user_data, int timeout_ms,
                                                       bool async)
 {
-    if (context == NULL || context->is_inited == false) {
+    if (context == NULL || MQTT_IS_INITED(context) == false) {
         return OPRT_INVALID_PARM;
     }
 
-    if (context->is_connected == false) {
+    if (MQTT_IS_CONNECTED(context) == false) {
         return OPRT_COM_ERROR;
     }
 
@@ -834,12 +935,12 @@ int tuya_mqtt_loop(tuya_mqtt_context_t *context)
     int rt = OPRT_OK;
     mqtt_client_status_t mqtt_status;
 
-    if (context->is_inited == false || context->manual_disconnect == true) {
+    if (MQTT_IS_INITED(context) == false || MQTT_MANUAL_DISC(context) == true) {
         return rt;
     }
 
     /* reconnect */
-    if (context->is_connected == false) {
+    if (MQTT_IS_CONNECTED(context) == false) {
         tuya_dev_evt_notify(DEV_EVT_MQTT_CONNECT, ACTION_BEFORE, NULL);
         mqtt_status = mqtt_client_connect(context->mqtt_client);
         tuya_dev_evt_notify(DEV_EVT_MQTT_CONNECT, ACTION_AFTER, NULL);
@@ -850,6 +951,11 @@ int tuya_mqtt_loop(tuya_mqtt_context_t *context)
             return rt;
 
         } else if (mqtt_status != MQTT_STATUS_SUCCESS) {
+            /* Do not back off/sleep when stop/destroy already asked us to
+             * stop: the caller would wait for nothing. */
+            if (MQTT_MANUAL_DISC(context) || MQTT_IS_INITED(context) == false) {
+                return rt;
+            }
             uint16_t nextRetryBackOff = 0U;
             if (BackoffAlgorithm_GetNextBackoff(&context->backoff_algorithm, rand(), &nextRetryBackOff) ==
                 BackoffAlgorithmSuccess) {
@@ -859,31 +965,77 @@ int tuya_mqtt_loop(tuya_mqtt_context_t *context)
                 core_system_sleep(nextRetryBackOff);
                 return rt;
             }
+        } else {
+            /* stop/destroy can race with this connect: it may have passed the
+             * manual_disconnect check above, waited on the conn lock and then
+             * connected after stop returned. Do not leave the link up. */
+            if (MQTT_MANUAL_DISC(context) || MQTT_IS_INITED(context) == false) {
+                (void)mqtt_client_disconnect(context->mqtt_client);
+            }
         }
         return rt;
     }
 
-    /* LOCK */
-    /* publish async process */
+    /* Publish async entries and expire timed-out ones. The list lock must not
+     * be held across mqtt_client_publish() (TLS write can take milliseconds)
+     * or a user callback, so collect work under the lock and run it after
+     * unlocking. Unlinked entries are private to this (cloud) thread, so no
+     * other thread can touch them while they are being published. */
+    mqtt_publish_handle_t *expired = NULL;
+    mqtt_publish_handle_t *to_publish = NULL;
+    uint64_t now_ms = core_system_get_millisecond();
+
+    if (context->publish_mutex != NULL) {
+        core_mutex_lock(context->publish_mutex);
+    }
     mqtt_publish_handle_t **next_handle = &context->publish_list;
     while (*next_handle) {
         mqtt_publish_handle_t *entry = *next_handle;
-    
-        if (entry->timeout <= core_time_get_posix()) {
-            entry->cb(OPRT_TIMEOUT, entry->user_data);
+
+        if (entry->timeout <= now_ms) {
             *next_handle = entry->next;
-            core_free(entry->payload);
-            core_free(entry);
+            entry->next = expired;
+            expired = entry;
             continue;
         }
-    
+
         if (entry->msgid <= 0) {
-            entry->msgid = mqtt_client_publish(context->mqtt_client,
-                entry->topic, entry->payload, entry->payload_length, 1);
+            *next_handle = entry->next;
+            entry->next = to_publish;
+            to_publish = entry;
+            continue;
         }
         next_handle = &entry->next;
     }
-    /* UNLOCK */
+    if (context->publish_mutex != NULL) {
+        core_mutex_unlock(context->publish_mutex);
+    }
+
+    while (to_publish != NULL) {
+        mqtt_publish_handle_t *entry = to_publish;
+
+        to_publish = entry->next;
+        uint16_t msgid = mqtt_client_publish(context->mqtt_client, entry->topic, entry->payload,
+                                             entry->payload_length, MQTT_QOS_1);
+        if (context->publish_mutex != NULL) {
+            core_mutex_lock(context->publish_mutex);
+        }
+        entry->msgid = msgid;
+        entry->next = context->publish_list;
+        context->publish_list = entry;
+        if (context->publish_mutex != NULL) {
+            core_mutex_unlock(context->publish_mutex);
+        }
+    }
+
+    while (expired != NULL) {
+        mqtt_publish_handle_t *entry = expired;
+
+        expired = entry->next;
+        entry->cb(OPRT_TIMEOUT, entry->user_data);
+        core_free(entry->payload);
+        core_free(entry);
+    }
 
     /* yield */
     mqtt_client_yield(context->mqtt_client);
@@ -902,18 +1054,53 @@ int tuya_mqtt_loop(tuya_mqtt_context_t *context)
  */
 int tuya_mqtt_destory(tuya_mqtt_context_t *context)
 {
-    if (context == NULL || context->is_inited != true) {
+    if (context == NULL || MQTT_IS_INITED(context) != true) {
         return OPRT_COM_ERROR;
     }
 
-    tuya_mqtt_protocol_unregister_all(context);
+    /* Stop the cloud task from starting another reconnect while the client is
+     * being torn down. */
+    MQTT_SET_MANUAL_DISC(context, true);
+    MQTT_SET_INITED(context, false);
+
+    mqtt_client_status_t mqtt_status = MQTT_STATUS_SUCCESS;
     if (context->mqtt_client) {
-        mqtt_client_status_t mqtt_status = mqtt_client_deinit(context->mqtt_client);
+        mqtt_status = mqtt_client_deinit(context->mqtt_client);
         mqtt_client_free(context->mqtt_client);
         context->mqtt_client = NULL;
-        if (mqtt_status != MQTT_STATUS_SUCCESS) {
-            return OPRT_COM_ERROR;
-        }
+    }
+
+    /* mqtt_client_free() waited for every in-flight yield/on_message to exit,
+     * so no cloud-task callback can traverse protocol_list/subscribe_list now.
+     * Free them here (the public unregister_all refuses once INITED is
+     * cleared). */
+    __mqtt_protocol_free_all(context);
+    __mqtt_subscribe_free_all(context);
+
+    /* The link is gone for good: pending publishes can no longer complete.
+     * Unhook the list under the lock, then free it outside. */
+    mqtt_publish_handle_t *entry = NULL;
+    if (context->publish_mutex != NULL) {
+        core_mutex_lock(context->publish_mutex);
+        entry = context->publish_list;
+        context->publish_list = NULL;
+        core_mutex_unlock(context->publish_mutex);
+    }
+    while (entry != NULL) {
+        mqtt_publish_handle_t *next = entry->next;
+
+        core_free(entry->payload);
+        core_free(entry);
+        entry = next;
+    }
+
+    if (context->publish_mutex != NULL) {
+        core_mutex_release(context->publish_mutex);
+        context->publish_mutex = NULL;
+    }
+
+    if (mqtt_status != MQTT_STATUS_SUCCESS) {
+        return OPRT_COM_ERROR;
     }
 
     return OPRT_OK;
@@ -933,7 +1120,15 @@ bool tuya_mqtt_connected(tuya_mqtt_context_t *context)
     if (context == NULL) {
         return false;
     }
-    return context->is_connected;
+    return MQTT_IS_CONNECTED(context);
+}
+
+uint32_t tuya_mqtt_conn_epoch(tuya_mqtt_context_t *context)
+{
+    if (context == NULL) {
+        return 0;
+    }
+    return MQTT_CONN_EPOCH(context);
 }
 
 /**
