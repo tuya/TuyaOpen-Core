@@ -377,8 +377,8 @@ EXIT:
 
 STATIC BOOL_T __ai_mq_is_biz_id_vaild(ty_cJSON *bizId)
 {
-    if (ty_cJSON_IsString(bizId) && strlen(bizId->valuestring) == AI_UUID_V4_LEN &&
-        memcmp(bizId->valuestring, ai_mqtt_ctx->biz_id, AI_UUID_V4_LEN) == 0) {
+    if (ty_cJSON_IsString(bizId) && strlen(bizId->valuestring) == AI_UUID_V4_LEN - 1 &&
+        memcmp(bizId->valuestring, ai_mqtt_ctx->biz_id, AI_UUID_V4_LEN - 1) == 0) {
         memset(ai_mqtt_ctx->biz_id, 0, SIZEOF(ai_mqtt_ctx->biz_id));
         return TRUE;
     }
