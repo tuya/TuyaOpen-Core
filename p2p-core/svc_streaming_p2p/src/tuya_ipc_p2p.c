@@ -14,6 +14,7 @@
 #include "tuya_ipc_p2p_error.h"
 #include "tuya_ipc_p2p_inner.h"
 #include "tuya_ipc_p2p_common.h"
+#include "tuya_iot.h"
 #include "tuya_ipc_media_stream_event.h"
 #include "tuya_ipc_media_stream.h"
 #include "tuya_ipc_media_adapter.h"
@@ -314,6 +315,8 @@ OPERATE_RET p2p_deal_with_listen(int session)
             PR_ERR("resend p2p passwd to service");
             if (OPRT_OK == tuya_ipc_p2p_update_pw(sg_p2p_session->str_P2p_auth.p2p_passwd)) {
                 userCheckEnable = TRUE;
+            } else {
+                PR_ERR("resend p2p passwd failed");
             }
         }
         PR_ERR("Close session[%d]", session);
@@ -358,6 +361,27 @@ RET:
  *  Output: none
  *  Return:
  ***********************************************************/
+static void __p2p_auth_sign(const char *passwd, const char *local_key, char sign[32 + 1])
+{
+    CORE_HASH_HANDLE md5;
+    unsigned char    decrypt[16];
+    int              offset = 0;
+
+    core_md5_create_init(&md5);
+    core_md5_starts_ret(md5);
+    core_md5_update_ret(md5, (uint8_t *)passwd, strlen(passwd));
+    core_md5_update_ret(md5, (uint8_t *)"||", 2);
+    core_md5_update_ret(md5, (uint8_t *)local_key, strlen(local_key));
+    core_md5_finish_ret(md5, decrypt);
+    core_md5_free(md5);
+
+    for (int i = 0; i < 16; i++) {
+        sprintf(&sign[offset], "%02x", decrypt[i]);
+        offset += 2;
+    }
+    sign[offset] = '\0';
+}
+
 OPERATE_RET p2p_get_userinfo(int session, int p2pType)
 {
     char *read_buff = NULL;
@@ -435,33 +459,38 @@ OPERATE_RET p2p_get_userinfo(int session, int p2pType)
         return OPRT_COM_ERROR;
     }
 
-    char sign[32 + 1] = {0};
-    CORE_HASH_HANDLE md5;
-    core_md5_create_init(&md5);
-    core_md5_starts_ret(md5);
-    unsigned char decrypt[16];
-    core_md5_update_ret(md5, (uint8_t *)(sg_p2p_session->str_P2p_auth.p2p_passwd),
-                       strlen(sg_p2p_session->str_P2p_auth.p2p_passwd));
-    core_md5_update_ret(md5, (uint8_t *)"||", 2);
-    core_md5_update_ret(md5, (uint8_t *)(sg_p2p_session->str_P2p_auth.gw_local_key),
-                       strlen(sg_p2p_session->str_P2p_auth.gw_local_key));
-    core_md5_finish_ret(md5, decrypt);
-    core_md5_free(md5);
+    char cached_sign[32 + 1] = {0};
+    char sign[32 + 1]        = {0};
 
-    int offset = 0;
-    int i = 0;
-    for (i = 0; i < 16; i++) {
-        sprintf(&sign[offset], "%02x", decrypt[i]);
-        offset += 2;
+    /* p2p_init() snapshots the activation data once. A device that is
+     * re-activated in the same boot (reset -> netcfg, no reboot) gets a new
+     * local key, so the snapshot no longer matches the peer's signature and
+     * every session fails auth until the device reboots. Sign with the live
+     * key and keep the cached copy in sync for the resend path. */
+    __p2p_auth_sign(sg_p2p_session->str_P2p_auth.p2p_passwd,
+                    sg_p2p_session->str_P2p_auth.gw_local_key, cached_sign);
+
+    const char *live_lk = tuya_iot_localkey_get(tuya_iot_client_get());
+    if (NULL != live_lk && '\0' != live_lk[0] &&
+        0 != strcmp(sg_p2p_session->str_P2p_auth.gw_local_key, live_lk)) {
+        PR_WARN("p2p local key changed after re-activation, refresh cached auth");
+        snprintf(sg_p2p_session->str_P2p_auth.gw_local_key,
+                 sizeof(sg_p2p_session->str_P2p_auth.gw_local_key), "%s", live_lk);
     }
-    sign[offset] = 0;
 
-    if (strcmp(strUserInfo.user, sg_p2p_session->str_P2p_auth.p2p_name) == 0 && strcmp(strUserInfo.passwd, sign) == 0) {
+    __p2p_auth_sign(sg_p2p_session->str_P2p_auth.p2p_passwd,
+                    sg_p2p_session->str_P2p_auth.gw_local_key, sign);
+
+    if (strcmp(strUserInfo.user, sg_p2p_session->str_P2p_auth.p2p_name) == 0 &&
+        strcmp(strUserInfo.passwd, sign) == 0) {
         PR_DEBUG("auth success");
         return OPRT_OK;
     }
 
-    PR_ERR("auth failed");
+    /* Keep both signatures in the log: matching 'live' but not 'cached' means
+     * the activation key changed after p2p_init(); matching neither means the
+     * cloud has not picked up the device password yet. */
+    PR_ERR("auth failed: peer=%s cached=%s live=%s", strUserInfo.passwd, cached_sign, sign);
 
     return OPRT_COM_ERROR;
 }

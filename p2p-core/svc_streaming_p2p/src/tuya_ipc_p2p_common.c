@@ -207,6 +207,34 @@ OPERATE_RET tuya_ipc_p2p_get_pw(char p2p_pw[])
 }
 
 /***********************************************************
+ *  Function: tuya_ipc_p2p_passwd_sync
+ *  Note:Push the device P2P password to the cloud for the current activation.
+ *        A (re-)activation creates or resets the cloud device record, so the
+ *        password has to be uploaded again before the App fetches it for the
+ *        first P2P connection after provisioning.
+ *  Input: none
+ *  Output: none
+ *  Return: OPRT_OK on success
+ ***********************************************************/
+OPERATE_RET tuya_ipc_p2p_passwd_sync(void)
+{
+    char        p2p_pw[P2P_PASSWD_LEN + 1] = {0};
+    OPERATE_RET ret = tuya_ipc_p2p_get_pw(p2p_pw);
+
+    if (OPRT_OK != ret || '\0' == p2p_pw[0]) {
+        PR_ERR("p2p passwd get failed %d", ret);
+        return OPRT_COM_ERROR;
+    }
+
+    /* get_pw() only pushes when sg_p2p_pwd_cloud_synced is still false; a
+     * re-activation needs the password on the new record even when it was
+     * already synced for the previous one. */
+    ret = tuya_ipc_p2p_update_pw(p2p_pw);
+    PR_NOTICE("p2p passwd sync after activation ret=%d", ret);
+    return ret;
+}
+
+/***********************************************************
  *  Function: tuya_ipc_p2p_get_lk
  *  Note:Get p2p local_key
  *  Input:
