@@ -196,7 +196,11 @@ CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_DESC_DISC_TYPE_T, TKL_BLE_GATT_DESC_DISC_TY
 CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_DATA_REPORT_T, TKL_BLE_DATA_REPORT_T);
 CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_SUBSCRIBE_EVT_T, TKL_BLE_SUBSCRBE_EVT_T);
 CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_READ_CHAR_EVT_T, TKL_BLE_READ_CHAR_EVT_T);
-CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GAP_PARAMS_EVT_T, TKL_BLE_GAP_PARAMS_EVT_T);
+/* Some TKLs extend the GAP event union (e.g. extended advertising); the
+ * existing member offsets are unchanged, so require TKL >= core instead of
+ * an exact size match. */
+typedef char _core_ble_assert_CORE_BLE_GAP_PARAMS_EVT_T
+    [(sizeof(TKL_BLE_GAP_PARAMS_EVT_T) >= sizeof(CORE_BLE_GAP_PARAMS_EVT_T)) ? 1 : -1];
 CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_PARAMS_EVT_T, TKL_BLE_GATT_PARAMS_EVT_T);
 
 /* offsetof checks for the event fields read by core */
