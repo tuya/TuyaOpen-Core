@@ -30,7 +30,11 @@
  * TKL BLE GAP/GATT API. */
 #include "tkl_bluetooth.h"
 #endif
+#if defined(TUYAOPEN_HAS_TKL_FS)
+/* The platform header declares TUYAOPEN_HAS_TKL_FS when it implements the
+ * TKL file system API. */
 #include "tkl_fs.h"
+#endif
 
 /* CORE_API_OPS_T: log / memory / system / semaphore / mutex / thread / queue */
 CORE_API_OPS_T core_api_ops_platform = {
@@ -107,7 +111,10 @@ CORE_NETWORK_OPS_T core_network_ops_platform = {
 
 /* CORE_NETIF_OPS_T is implemented by each platform's netif ops file. */
 
-/* CORE_FS_OPS_T: file and directory API */
+/* CORE_FS_OPS_T: file and directory API. Platforms without a TKL file system
+ * leave the card absent; core_fs.c only fails when a caller actually uses it. */
+#if defined(TUYAOPEN_HAS_TKL_FS)
+
 CORE_FS_OPS_T core_fs_ops_platform = {
     //! file
     .fopen   = tkl_fopen,
@@ -131,6 +138,12 @@ CORE_FS_OPS_T core_fs_ops_platform = {
     .dir_name         = tkl_dir_name,
     .dir_is_directory = tkl_dir_is_directory,
 };
+
+#else
+
+CORE_FS_OPS_T core_fs_ops_platform = { 0 };
+
+#endif /* TUYAOPEN_HAS_TKL_FS */
 
 /* CORE_BLUETOOTH_OPS_T: peripheral GAP / GATT server API */
 #if defined(ENABLE_BLUETOOTH) && (ENABLE_BLUETOOTH == 1) && defined(TUYAOPEN_HAS_TKL_BLE)
