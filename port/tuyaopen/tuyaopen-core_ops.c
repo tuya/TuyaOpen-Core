@@ -25,16 +25,12 @@
 #include "tkl_thread.h"
 #include "tkl_queue.h"
 #include "tkl_network.h"
-#if defined(ENABLE_BLUETOOTH) && (ENABLE_BLUETOOTH == 1) && defined(TUYAOPEN_HAS_TKL_BLE)
+#if defined(ENABLE_BLUETOOTH) && (ENABLE_BLUETOOTH == 1)
+/* The platform header declares TUYAOPEN_HAS_TKL_BLE when it implements the
+ * TKL BLE GAP/GATT API. */
 #include "tkl_bluetooth.h"
 #endif
 #include "tkl_fs.h"
-
-#if defined(ESP_PLATFORM)
-#include "netif_esp.h"
-#else
-#include "tkl_wired.h"
-#endif
 
 /* CORE_API_OPS_T: log / memory / system / semaphore / mutex / thread / queue */
 CORE_API_OPS_T core_api_ops_platform = {
@@ -109,39 +105,7 @@ CORE_NETWORK_OPS_T core_network_ops_platform = {
 #endif
 };
 
-/* CORE_NETIF_OPS_T: link status and local IP */
-#if defined(ESP_PLATFORM)
-CORE_NETIF_OPS_T core_netif_ops_platform = {
-    .get_ip       = core_netif_esp_get_ip,
-    .set_link_cb  = core_netif_esp_set_link_cb,
-    /* No interface-list API: enumeration is not supported on this port. */
-    .foreach_addr = NULL,
-};
-#else
-static CORE_NETIF_LINK_CHANGE_CB s_link_cb;
-
-static void __link_cb_shim(TKL_WIRED_STAT_E status)
-{
-    if (s_link_cb) {
-        s_link_cb((CORE_NETIF_LINK_STAT_E)status);
-    }
-}
-
-static OPERATE_RET __set_link_cb(CORE_NETIF_LINK_CHANGE_CB cb)
-{
-    s_link_cb = cb;
-    return tkl_wired_set_status_cb(__link_cb_shim);
-}
-
-#if !defined(__linux__)
-CORE_NETIF_OPS_T core_netif_ops_platform = {
-    .get_ip       = tkl_wired_get_ip,
-    .set_link_cb  = __set_link_cb,
-    /* No interface-list API: enumeration is not supported on this port. */
-    .foreach_addr = NULL,
-};
-#endif
-#endif
+/* CORE_NETIF_OPS_T is implemented by each platform's netif ops file. */
 
 /* CORE_FS_OPS_T: file and directory API */
 CORE_FS_OPS_T core_fs_ops_platform = {

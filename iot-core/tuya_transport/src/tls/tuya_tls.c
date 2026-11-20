@@ -358,12 +358,27 @@ static OPERATE_RET mbedtls_cert_pkey_parse(tuya_tls_hander p_tls_handler)
 
 /* Modern AEAD-only suite list. CBC mode dropped (no longer recommended) and
  * ChaCha20-Poly1305 added so we negotiate one of the AEAD suites that every
- * mainstream TLS 1.2 server supports. */
+ * mainstream TLS 1.2 server supports.
+ *
+ * Keep each entry tied to the algorithms compiled into this build: the server
+ * picks a suite from this list, and mbedtls_ssl_ciphersuite_from_id() returns
+ * NULL (handshake fails with MBEDTLS_ERR_SSL_BAD_INPUT_DATA) when the chosen
+ * suite is not in ciphersuite_definitions[]. */
 static int tuya_tls_ciphersuite_list[] = {
+#if defined(MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED) && defined(MBEDTLS_ECDSA_C) && defined(MBEDTLS_AES_C) && \
+    defined(MBEDTLS_GCM_C)
     MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+#endif
+#if defined(MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED) && defined(MBEDTLS_ECDSA_C) && defined(MBEDTLS_CHACHA20_C) && \
+    defined(MBEDTLS_CHACHAPOLY_C)
     MBEDTLS_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+#endif
+#if defined(MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED) && defined(MBEDTLS_AES_C) && defined(MBEDTLS_GCM_C)
     MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+#endif
+#if defined(MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED) && defined(MBEDTLS_CHACHA20_C) && defined(MBEDTLS_CHACHAPOLY_C)
     MBEDTLS_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+#endif
     0,
 };
 
