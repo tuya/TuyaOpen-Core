@@ -78,6 +78,14 @@ void tuya_iot_dp_sync_process(void *data)
         return;
     }
 
+    /* No DP is pending cloud sync; dp_obj_dump_stat_local_json() returns
+     * OPRT_OK with NULL outputs in that case. */
+    if (NULL == dpsjson || NULL == dpvalid || 0 == dpvalid->num) {
+        core_free(dpsjson);
+        core_free(dpvalid);
+        return;
+    }
+
     tuya_iot_dp_report_json_async(client, dpsjson, NULL, dp_sync_cb, dpvalid, 5000);
     core_free(dpsjson);
 }
@@ -305,7 +313,7 @@ int tuya_iot_dp_obj_report(tuya_iot_client_t *client, const char *devid, dp_obj_
 
     bool need_free_dpvalid = true;
 
-    if (tuya_lan_is_connected()) {
+    if (tuya_lan_is_connected() && NULL != dpout.dpsjson) {
         char *out = NULL;
         PR_DEBUG("lan channel report");
         dp_rept_json_append(schema, dpout.dpsjson, NULL, NULL, 0, &out);
@@ -314,7 +322,7 @@ int tuya_iot_dp_obj_report(tuya_iot_client_t *client, const char *devid, dp_obj_
         tuya_iot_dp_sync_start(client, 5);
     }
 
-    if (tuya_iot_is_connected()) {
+    if (tuya_iot_is_connected() && NULL != dpout.dpsjson) {
         PR_DEBUG("mqtt channel report");
         ret = tuya_iot_dp_report_json_with_notify(client, dpout.dpsjson, NULL, dp_sync_cb, dpvalid, 5000);
         need_free_dpvalid = false;
