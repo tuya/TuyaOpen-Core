@@ -1,0 +1,48 @@
+name: OpenSSL no-deprecated and LibreSSL
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  ssl:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        ssl: [libressl, openssl]
+
+    env:
+      CMAKE_GENERATOR: Ninja
+      OPENSSL_ROOT_DIR: "assets/${{ matrix.ssl }}"
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: fix flaky azure mirrors
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo sed -i 's/azure\./de\./' /etc/apt/sources.list
+
+    - name: install packages
+      run: |
+        sudo apt-get update && sudo apt-get install -y ninja-build
+
+    - name: Download pre-compiled OpenSSL/LibreSSL
+      run: |
+        wget "https://github.com/baresip/tools/releases/download/v2026.05.0/assets.tar.gz"
+        tar -xf assets.tar.gz
+
+    - name: make
+      run: |
+        cmake -B build -DCMAKE_C_FLAGS="-Werror"
+        cmake --build build -j
+        cmake --build build -t retest
+
+    - name: retest
+      run: |
+        ./build/test/retest -r -v

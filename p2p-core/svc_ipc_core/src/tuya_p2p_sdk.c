@@ -36,6 +36,7 @@ OPERATE_RET httpc_gw_active(const GW_ACTV_IN_PARM_V41_S *param, cJSON **result);
 OPERATE_RET __p2p_v3_login_init(int preconnect, int max_client, int bitrate);
 void tuya_p2p_rtc_signaling_cb(char *remote_id, char *signaling, uint32_t len);
 void tuya_p2p_lan_signaling_cb(char *remote_id, char *signaling, uint32_t len);
+static uint32_t __p2p_mqtt_conn_epoch_cb(void);
 static int ipc_lan_cmd_cb(const uint8_t *data, uint8_t **out);
 
 OPERATE_RET TUYA_APP_Start(TUYA_IPC_SDK_VAR_S *pSdkVar)
@@ -221,6 +222,9 @@ OPERATE_RET __p2p_v3_login_init(int preconnect, int max_client, int bitrate)
     // strOpt.cb.on_moto_signaling = tuya_p2p_rtc_moto_signaling_cb;
     strOpt.cb.on_signaling = tuya_p2p_rtc_signaling_cb;
     strOpt.cb.on_lan_signaling = tuya_p2p_lan_signaling_cb;
+    /* Let the RTC worker detect an MQTT reconnect (even a fast drop+reconnect
+     * between two samples) and resend a lost answer. */
+    strOpt.get_mqtt_conn_epoch = __p2p_mqtt_conn_epoch_cb;
     // strOpt.cb.on_log            = __media_service_rtc_log_upload;
     // strOpt.cb.on_log_get_level  = tuya_imm_service_log_get_level;
     // strOpt.cb.on_auth           = tuya_p2p_rtc_auth;
@@ -230,7 +234,7 @@ OPERATE_RET __p2p_v3_login_init(int preconnect, int max_client, int bitrate)
 
     strOpt.video_bitrate_kbps = bitrate;
 
-    /* Doubling this on Linux did not help: the limit is the link, not the buffer. */
+    /* Doubling this did not help in testing: the limit is the link, not the buffer. */
     uint32_t vsend = (bitrate * 1024u / 8u) * TUYA_P2P_SEND_BUFFER_SECONDS;
     if (vsend > TUYA_P2P_SEND_BUFFER_SIZE_MAX) {
         vsend = TUYA_P2P_SEND_BUFFER_SIZE_MAX;
@@ -308,6 +312,13 @@ void tuya_p2p_lan_signaling_cb(char *remote_id, char *signaling, uint32_t len)
     }
     PR_DEBUG("lan signaling report len:%u", len);
     (void)tuya_lan_data_report(FRM_LAN_P2P_SIGNAL, 0, (uint8_t *)signaling, len);
+}
+
+/* MQTT connection epoch probe for the RTC worker (answer resend after any
+ * reconnect, including one completed between two worker samples). */
+static uint32_t __p2p_mqtt_conn_epoch_cb(void)
+{
+    return tuya_iot_mqtt_conn_epoch();
 }
 
 void tuya_p2p_rtc_signaling_cb(char *remote_id, char *signaling, uint32_t len)

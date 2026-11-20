@@ -260,6 +260,13 @@ typedef int (*tuya_p2p_rtc_session_state_cb_t)(char *remote_id, int handle, int 
 // addresses size is 1024
 typedef int (*tuya_p2p_rtc_session_get_address_cb_t)(char *address);
 
+/* Return non-zero while the cloud MQTT link is connected. The RTC worker uses
+ * the false->true transition to resend an answer lost during a reconnect. */
+typedef int (*tuya_p2p_rtc_mqtt_connected_cb_t)(void);
+/* Returns a counter bumped on every MQTT (re)connect. Preferred over
+ * is_mqtt_connected: a fast drop+reconnect between two samples is visible. */
+typedef uint32_t (*tuya_p2p_rtc_mqtt_epoch_cb_t)(void);
+
 typedef struct tuya_p2p_rtc_cb {
     tuya_p2p_rtc_signaling_cb_t on_signaling;      // Signaling callback, application layer sends signaling through mqtt
     tuya_p2p_rtc_signaling_cb_t on_moto_signaling; // Signaling callback, application layer sends signaling through moto
@@ -300,6 +307,16 @@ typedef struct tuya_p2p_rtc_options {
     uint32_t video_bitrate_kbps; // Device side fills video bitrate, client side does not need to set
     uint32_t preconnect_enable;  // Whether to enable pre-connection, 1: enable, 0: disable
     uint32_t fragement_len;      // Data sending interface fragmentation length
+    /* Optional: MQTT connectivity probe. When set, the RTC worker watches its
+     * false->true transition and asks the signalling worker to resend the
+     * answer of a session whose ICE is still pending (an answer published
+     * during a reconnect is lost otherwise). */
+    tuya_p2p_rtc_mqtt_connected_cb_t is_mqtt_connected;
+    /* Optional: MQTT connection epoch. When set, the RTC worker detects any
+     * reconnect that happened since the answer was published (including a
+     * drop+reconnect inside one polling interval) and resends the answer.
+     * Takes precedence over is_mqtt_connected when both are provided. */
+    tuya_p2p_rtc_mqtt_epoch_cb_t get_mqtt_conn_epoch;
 } tuya_p2p_rtc_options_t;
 
 // Get p2p sdk version number
@@ -459,6 +476,10 @@ int32_t tuya_p2p_rtc_clear_send_buffer(int32_t handle, uint32_t channel_id);
 int32_t tuya_p2p_rtc_set_remote_online(char *remote_id);
 int32_t tuya_p2p_getwaitsnd(int32_t handle, uint32_t channel_id);
 int32_t tuya_p2p_log_set_level(tuya_p2p_rtc_log_level_e level);
+
+/* Stack high-water diagnostic (field tuning; ports may implement it as a no-op). */
+#define P2P_STACK_WATERMARK_INTERVAL_MS 10000
+void tuya_p2p_log_thread_stack(const char *name, uint32_t requested_bytes);
 
 #ifdef __cplusplus
 }

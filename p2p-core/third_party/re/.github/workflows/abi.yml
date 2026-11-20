@@ -1,0 +1,48 @@
+name: ABI Checks
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  abicheck:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+          ref: 'v4.6.0'
+          path: old
+
+    - uses: actions/checkout@v7
+      with:
+          path: current
+
+    - name: fix flaky azure mirrors
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo sed -i 's/azure\./de\./' /etc/apt/sources.list
+
+    - name: install abidiff
+      run: sudo apt-get update && sudo apt-get install -y abigail-tools
+
+    - name: make shared lib
+      run: |
+        cmake -S old -B old/build && cmake --build old/build
+
+    - name: make current shared lib
+      run: |
+        cmake -S current -B current/build && cmake --build current/build
+
+    - name: abidiff compare
+      id: abidiff
+      run: abidiff old/build/libre.so current/build/libre.so
+      continue-on-error: true
+
+    - name: display warning
+      if: steps.abidiff.outcome != 'success'
+      run: echo "::warning::ABI Check failed - bump ABI version"

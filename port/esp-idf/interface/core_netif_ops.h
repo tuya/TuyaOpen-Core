@@ -14,6 +14,8 @@
 #ifndef __CORE_NETIF_OPS_H__
 #define __CORE_NETIF_OPS_H__
 
+#include <stdbool.h>
+
 #include "tuya_cloud_types.h"
 #include "tuya_error_code.h"
 
@@ -34,6 +36,32 @@ typedef enum {
  */
 typedef void (*CORE_NETIF_LINK_CHANGE_CB)(CORE_NETIF_LINK_STAT_E status);
 
+/** Interface-name buffer length, including the terminating NUL */
+#define CORE_NETIF_NAME_LEN 16
+
+/**
+ * @brief One local IPv4 interface address
+ *
+ * Plain character arrays (not NW_IP_S): the NW_IP_S layout depends on the
+ * platform, while this contract is shared by the core and every port.
+ */
+typedef struct {
+    char name[CORE_NETIF_NAME_LEN]; ///< interface name, e.g. "sta" / "wlan0"
+    char ip[16];                    ///< IPv4 address, dotted quad
+    char mask[16];                  ///< IPv4 netmask, dotted quad
+    char gw[16];                    ///< IPv4 gateway, may be empty
+} CORE_NETIF_ADDR_T;
+
+/**
+ * @brief Interface address enumeration callback
+ *
+ * @param[in] addr      one interface address, never NULL
+ * @param[in] user_data opaque pointer passed to core_netif_foreach
+ *
+ * @return true to stop the enumeration, false to continue
+ */
+typedef bool (*CORE_NETIF_ADDR_CB)(const CORE_NETIF_ADDR_T *addr, void *user_data);
+
 /**
  * @brief core_netif platform ops: members map one-to-one to the port's netif
  *        implementation
@@ -43,6 +71,9 @@ typedef struct {
     OPERATE_RET (*get_ip)(NW_IP_S *ip);
     /* Register the link status change callback; see core_netif_set_link_cb in core_netif.h */
     OPERATE_RET (*set_link_cb)(CORE_NETIF_LINK_CHANGE_CB cb);
+    /* Enumerate the local IPv4 interface addresses; optional, NULL when the
+     * platform has no interface list. See core_netif_foreach in core_netif.h */
+    OPERATE_RET (*foreach_addr)(CORE_NETIF_ADDR_CB cb, void *user_data);
 } CORE_NETIF_OPS_T;
 
 #ifdef __cplusplus

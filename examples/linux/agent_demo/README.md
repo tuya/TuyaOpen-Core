@@ -46,9 +46,7 @@ cd build && env -u DISPLAY ./agent_demo
 > thread blocks in the ALSA open → **the cloud connection never starts and the
 > binding QR code is never printed**. Removing `DISPLAY` (ALSA does not need X)
 > restores it: `env -u DISPLAY ./agent_demo`.
-> The selftest targets (agent_chain/nlg/http_selftest) do not open audio devices
-> and are unaffected; iot_demo / p2p_demo have no audio output and are likewise
-> unaffected.
+> iot_demo / p2p_demo have no audio output and are likewise unaffected.
 
 Credentials are optional: by default the PID/UUID/AuthKey from
 `include/tuya_config.h` are used, and they can be overridden with
@@ -138,39 +136,6 @@ Only `device_info_get` is registered, so the cloud `tools/list` matches the
 actual capabilities and never exposes placeholders whose calls would always
 fail.
 
-## Selftests
-
-Three standalone executables that need no cloud connection, no App and no
-credentials (run from the build directory — the `voice_16k.pcm` sample is copied
-there by CMake; running elsewhere prints a `run from build/` hint):
-
-```bash
-cd build && ./agent_chain_selftest
-cd build && ./agent_nlg_selftest
-cd build && ./agent_http_selftest
-```
-
-> Verification discipline: use `cmake --build build` (**all targets**) as the
-> criterion — running a single selftest is not complete verification: the
-> selftests can link while the agent_demo main target fails to link.
-
-- `agent_chain_selftest`: uplink audio source contract and sample frame
-  splitting — total bytes 82944, split into 80ms frames (2560B) = 33 frames
-  (32 full frames + a 1024B last frame), EOF semantics, close/reopen, bad path
-  rejection, **I/O error vs. EOF distinction** (fopen on a directory path
-  succeeds but read must return <0 rather than 0/EOF). The sample path uses the
-  same source as the app (`CONFIG_AGENT_DEMO_AUDIO_FILE` non-empty means that
-  file is tested). Expected output `AGENT CHAIN SELFTEST PASSED` (exit 0).
-- `agent_nlg_selftest`: downlink consumption contract — the final segment
-  (eof=1) of a multi-segment NLG stream carried non-empty by
-  `AI_USER_EVT_TEXT_STREAM_STOP` must be printed, while an empty packet must not
-  print anything. Events are built through the public API (independent of the
-  cloud packetization). Expected output `AGENT NLG SELFTEST PASSED` (exit 0).
-- `agent_http_selftest`: http_manager URL parsing boundary — out-of-range ports
-  (wraparound samples) and an explicit `:0` must be rejected by the parser;
-  in-range ports must not be rejected; empty-host regression (no network
-  needed). Expected output `AGENT HTTP SELFTEST PASSED` (exit 0).
-
 ## Voice sample
 
 The bundled sample `assets/voice_16k.pcm` (copied to `build/voice_16k.pcm` at
@@ -253,9 +218,8 @@ interaction are not enabled.
   processed).
 - **NLG final-segment printing boundary**: the final segment (eof=1) of a
   multi-segment NLG stream is printed when carried by STOP; this consumption
-  contract is covered by `agent_nlg_selftest`, but whether the cloud ever sends
-  a non-empty final segment depends on its packetization at runtime.
-  Contract-level success != end-to-end verification.
+  whether the cloud ever sends a non-empty final segment depends on its
+  packetization at runtime.
 - **URL parser boundaries (media download related)**: IPv6 literals (`[::1]`)
   and URLs containing userinfo (`user:pass@host`) are not supported — both fail
   safely via the explicit `:0` invalid check (the host segment is truncated at
@@ -299,10 +263,6 @@ interaction are not enabled.
     |       -- ai_agent/            # application wrapper (output cbs registration, text/file/image uplink)
     |       -- ai_skills/           # downlink text parsing (ASR/NLG/skill)
     |       -- ai_mcp/              # MCP tool set
-    +- selftest                      # offline selftests (standalone targets, no cloud; see "Selftests")
-    |   -- agent_chain_selftest.c   # link selftest (target agent_chain_selftest)
-    |   -- agent_nlg_selftest.c     # downlink consumption selftest (target agent_nlg_selftest)
-    |   -- agent_http_selftest.c    # URL parsing boundary selftest (target agent_http_selftest)
     -- CMakeLists.txt
     -- Kconfig                      # AGENT_DEMO* switches + component switches (audio_player/ai_audio)
 ```

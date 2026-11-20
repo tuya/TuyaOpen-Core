@@ -1562,6 +1562,14 @@ bool tuya_iot_is_connected(void)
     return tuya_mqtt_connected(&s_iot_client_solo->mqctx);
 }
 
+uint32_t tuya_iot_mqtt_conn_epoch(void)
+{
+    if (s_iot_client_solo == NULL) {
+        return 0;
+    }
+    return tuya_mqtt_conn_epoch(&s_iot_client_solo->mqctx);
+}
+
 /**
  * @brief Dispatches an event for the Tuya IoT client.
  *

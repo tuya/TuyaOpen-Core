@@ -2,11 +2,11 @@
  * @file core_network.c
  * @brief CORE network utilities: active-address tracking and socket operations.
  *
- * The socket calls go directly to the platform socket API. The platform
- * difference (POSIX on LINUX, lwIP on ESP32) is confined to the port-provided
- * core_network_platform.h header, so this file contains no ops table and no
- * platform #if. The active IPv4 address is kept in a local static and pushed
- * by the link owner on link events.
+ * The socket calls go directly to the platform socket API. Platform-specific
+ * socket details are confined to the port-provided core_network_platform.h
+ * header, so this file contains no ops table and no platform #if. The active
+ * IPv4 address is kept in a local static and pushed by the link owner on link
+ * events.
  *
  * @copyright Copyright (c) 2021-2024 Tuya Inc. All Rights Reserved.
  *
@@ -18,6 +18,15 @@
 #include "core_network_platform.h"
 #include "core_system.h"
 #include "dev_evt.h"
+
+/*
+ * The bit used by fcntl() to report O_NONBLOCK differs between C libraries
+ * and network stacks. The port header picks the value that matches the
+ * fcntl() implementation it exposes.
+ */
+#ifndef CORE_NET_O_NONBLOCK
+#define CORE_NET_O_NONBLOCK O_NONBLOCK
+#endif
 
 /* Active link source address: pushed by the link owner (application/port
  * layer) on link events */
@@ -259,7 +268,7 @@ int core_net_get_nonblock(const int fd)
         return -3000 + fd;
     }
 
-    return ((fcntl(fd, F_GETFL, 0) & O_NONBLOCK) == O_NONBLOCK) ? 1 : 0;
+    return ((fcntl(fd, F_GETFL, 0) & CORE_NET_O_NONBLOCK) == CORE_NET_O_NONBLOCK) ? 1 : 0;
 }
 
 /**
@@ -285,9 +294,9 @@ OPERATE_RET core_net_set_block(const int fd, const BOOL_T block)
     }
 
     if (block) {
-        flags &= (~O_NONBLOCK);
+        flags &= (~CORE_NET_O_NONBLOCK);
     } else {
-        flags |= O_NONBLOCK;
+        flags |= CORE_NET_O_NONBLOCK;
     }
 
     if (fcntl(fd, F_SETFL, flags) < 0) {

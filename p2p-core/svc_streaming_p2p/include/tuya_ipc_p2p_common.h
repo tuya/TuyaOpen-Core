@@ -128,6 +128,19 @@ OPERATE_RET tuya_ipc_get_p2p_auth(TUYA_IPC_P2P_AUTH_T *pAuth);
 OPERATE_RET tuya_ipc_p2p_update_pw(char p2p_pw[]);
 
 /**
+* @brief Push the device P2P password to the cloud for the current activation
+*
+* A (re-)activation creates or resets the cloud device record, so the password
+* has to be uploaded again before the App fetches it for the first P2P
+* connection after provisioning.
+*
+* @param (void)
+
+* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+*/
+OPERATE_RET tuya_ipc_p2p_passwd_sync(void);
+
+/**
  * @brief p2p log report
  *
  * @param[in] devid:device id

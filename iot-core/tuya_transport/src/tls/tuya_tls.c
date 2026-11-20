@@ -29,6 +29,7 @@
 #include <string.h>
 #include "core_api.h"
 #include "core_network.h"
+#include "core_system.h"
 #include "mbedtls/error.h"
 #include "mbedtls/debug.h"
 #include "mbedtls/net_sockets.h"
@@ -48,7 +49,10 @@ typedef struct {
     mbedtls_x509_crt    client_cert;
     mbedtls_pk_context  client_pkey;
     int                 socket_fd;
-    int                 overtime_s;
+    int                 overtime_ms;
+    /* True between a successful handshake and disconnect; guards
+     * mbedtls_ssl_get_bytes_avail() against a freed SSL context. */
+    volatile int        is_connected;
     MUTEX_HANDLE        mutex;
     MUTEX_HANDLE        read_mutex;
 } tuya_mbedtls_context_t;
@@ -224,7 +228,7 @@ static int __tuya_tls_socket_recv_cb(void *ctx, unsigned char *buf, size_t len)
     memset(&readfds, 0, sizeof(TUYA_FD_SET_T));
     core_net_fd_set(tls_context->socket_fd, &readfds);
     int activefds_cnt =
-        core_net_select(tls_context->socket_fd + 1, &readfds, NULL, NULL, tls_context->overtime_s * 1000);
+        core_net_select(tls_context->socket_fd + 1, &readfds, NULL, NULL, tls_context->overtime_ms);
     if (activefds_cnt <= 0) {
         core_net_set_block(tls_context->socket_fd, 1 - non_block);
         PR_ERR("select fail.%d", activefds_cnt);
@@ -354,12 +358,27 @@ static OPERATE_RET mbedtls_cert_pkey_parse(tuya_tls_hander p_tls_handler)
 
 /* Modern AEAD-only suite list. CBC mode dropped (no longer recommended) and
  * ChaCha20-Poly1305 added so we negotiate one of the AEAD suites that every
- * mainstream TLS 1.2 server supports. */
+ * mainstream TLS 1.2 server supports.
+ *
+ * Keep each entry tied to the algorithms compiled into this build: the server
+ * picks a suite from this list, and mbedtls_ssl_ciphersuite_from_id() returns
+ * NULL (handshake fails with MBEDTLS_ERR_SSL_BAD_INPUT_DATA) when the chosen
+ * suite is not in ciphersuite_definitions[]. */
 static int tuya_tls_ciphersuite_list[] = {
+#if defined(MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED) && defined(MBEDTLS_ECDSA_C) && defined(MBEDTLS_AES_C) && \
+    defined(MBEDTLS_GCM_C)
     MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+#endif
+#if defined(MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED) && defined(MBEDTLS_ECDSA_C) && defined(MBEDTLS_CHACHA20_C) && \
+    defined(MBEDTLS_CHACHAPOLY_C)
     MBEDTLS_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+#endif
+#if defined(MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED) && defined(MBEDTLS_AES_C) && defined(MBEDTLS_GCM_C)
     MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+#endif
+#if defined(MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED) && defined(MBEDTLS_CHACHA20_C) && defined(MBEDTLS_CHACHAPOLY_C)
     MBEDTLS_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+#endif
     0,
 };
 
@@ -517,12 +536,12 @@ tuya_tls_config_t *tuya_tls_config_get(tuya_tls_hander p_tls_handler)
  * @param hostname The hostname of the server to connect to.
  * @param port_num The port number of the server to connect to.
  * @param socket_fd The file descriptor of the socket to use for the connection.
- * @param overtime_s The timeout value in seconds for the connection attempt.
+ * @param timeout_ms The timeout value in milliseconds for the connection attempt.
  *
  * @return OPERATE_RET Returns OPRT_OK if the connection is established
  * successfully, or an error code if the connection fails.
  */
-OPERATE_RET tuya_tls_connect(tuya_tls_hander p_tls_handler, char *hostname, int port_num, int socket_fd, int overtime_s)
+OPERATE_RET tuya_tls_connect(tuya_tls_hander p_tls_handler, char *hostname, int port_num, int socket_fd, int timeout_ms)
 {
     OPERATE_RET             op_ret;
     tuya_mbedtls_context_t *tls_context = (tuya_mbedtls_context_t *)p_tls_handler;
@@ -534,7 +553,7 @@ OPERATE_RET tuya_tls_connect(tuya_tls_hander p_tls_handler, char *hostname, int 
 
     tls_context->config.hostname = hostname;
     tls_context->config.port     = port_num;
-    tls_context->config.timeout  = overtime_s;
+    tls_context->config.timeout  = timeout_ms;
 
     if (NULL == tls_context->config.exception_cb) {
         extern tuya_tls_event_cb tuya_cert_get_tls_event_cb(void);
@@ -615,8 +634,8 @@ OPERATE_RET tuya_tls_connect(tuya_tls_hander p_tls_handler, char *hostname, int 
 
     /* BIO default config */
     tls_context->socket_fd  = socket_fd;
-    tls_context->overtime_s = overtime_s;
-    core_net_set_timeout(tls_context->socket_fd, overtime_s * 1000, TRANS_SEND);
+    tls_context->overtime_ms = timeout_ms;
+    core_net_set_timeout(tls_context->socket_fd, timeout_ms, TRANS_SEND);
     mbedtls_ssl_set_bio(p_ssl_ctx, tls_context, __tuya_tls_socket_send_cb, __tuya_tls_socket_recv_cb, NULL);
     PR_DEBUG("socket fd is set. set to inner send/recv to handshake");
 
@@ -664,6 +683,7 @@ OPERATE_RET tuya_tls_connect(tuya_tls_hander p_tls_handler, char *hostname, int 
         mbedtls_ssl_set_bio(p_ssl_ctx, tls_context->config.user_data, tls_context->config.f_send,
                             tls_context->config.f_recv, NULL);
     }
+    __atomic_store_n(&tls_context->is_connected, 1, __ATOMIC_RELEASE);
 
     PR_DEBUG("TUYA_TLS Success Connect %s:%d Suit:%s", (hostname ? hostname : ""), port_num,
              mbedtls_ssl_get_ciphersuite(p_ssl_ctx));
@@ -757,11 +777,45 @@ int tuya_tls_read(tuya_tls_hander tls_handler, uint8_t *buf, uint32_t len)
     }
 
     tuya_mbedtls_context_t *tls_context = (tuya_mbedtls_context_t *)tls_handler;
+    uint64_t t0 = core_system_get_millisecond();
     core_mutex_lock(tls_context->read_mutex);
+    uint64_t t1 = core_system_get_millisecond();
     int value = mbedtls_ssl_read(&(tls_context->ssl_ctx), buf, len);
+    uint64_t t2 = core_system_get_millisecond();
     core_mutex_unlock(tls_context->read_mutex);
 
+    /* Locates a slow reader: mutex wait means another thread (or a stuck
+     * previous read) holds the TLS context; ssl_read itself covers BIO
+     * select/recv and record reassembly. */
+    if (t1 - t0 >= 200ULL) {
+        PR_WARN("tls read mutex wait %ums", (unsigned)(t1 - t0));
+    }
+    if (t2 - t1 >= 500ULL) {
+        PR_WARN("tls ssl_read took %ums (len %u) ret=%d", (unsigned)(t2 - t1), (unsigned)len, value);
+    }
+
     return value;
+}
+
+int tuya_tls_get_pending(tuya_tls_hander tls_handler)
+{
+    if (tls_handler == NULL) {
+        return 0;
+    }
+
+    tuya_mbedtls_context_t *tls_context = (tuya_mbedtls_context_t *)tls_handler;
+    int pending = 0;
+
+    /* ssl_read also takes this lock; it serializes against disconnect's
+     * mbedtls_ssl_free. Re-check is_connected inside the lock because
+     * disconnect clears it just before acquiring the same lock. */
+    core_mutex_lock(tls_context->read_mutex);
+    if (__atomic_load_n(&tls_context->is_connected, __ATOMIC_ACQUIRE)) {
+        pending = mbedtls_ssl_get_bytes_avail(&(tls_context->ssl_ctx));
+    }
+    core_mutex_unlock(tls_context->read_mutex);
+
+    return pending;
 }
 
 /**
@@ -784,6 +838,7 @@ OPERATE_RET tuya_tls_disconnect(tuya_tls_hander tls_handler)
     }
 
     tuya_mbedtls_context_t *tls_context = (tuya_mbedtls_context_t *)tls_handler;
+    __atomic_store_n(&tls_context->is_connected, 0, __ATOMIC_RELEASE);
     // wait for tls read quit,then free tls memory
     mu_ret = core_mutex_lock(tls_context->read_mutex);
     if (OPRT_OK != mu_ret) {

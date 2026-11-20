@@ -25,15 +25,15 @@
 #include "tkl_thread.h"
 #include "tkl_queue.h"
 #include "tkl_network.h"
-#if defined(ENABLE_BLUETOOTH) && (ENABLE_BLUETOOTH == 1) && defined(TUYAOPEN_HAS_TKL_BLE)
+#if defined(ENABLE_BLUETOOTH) && (ENABLE_BLUETOOTH == 1)
+/* The platform header declares TUYAOPEN_HAS_TKL_BLE when it implements the
+ * TKL BLE GAP/GATT API. */
 #include "tkl_bluetooth.h"
 #endif
+#if defined(TUYAOPEN_HAS_TKL_FS)
+/* The platform header declares TUYAOPEN_HAS_TKL_FS when it implements the
+ * TKL file system API. */
 #include "tkl_fs.h"
-
-#if defined(ESP_PLATFORM)
-#include "netif_esp.h"
-#else
-#include "tkl_wired.h"
 #endif
 
 /* CORE_API_OPS_T: log / memory / system / semaphore / mutex / thread / queue */
@@ -109,37 +109,12 @@ CORE_NETWORK_OPS_T core_network_ops_platform = {
 #endif
 };
 
-/* CORE_NETIF_OPS_T: link status and local IP */
-#if defined(ESP_PLATFORM)
-CORE_NETIF_OPS_T core_netif_ops_platform = {
-    .get_ip      = core_netif_esp_get_ip,
-    .set_link_cb = core_netif_esp_set_link_cb,
-};
-#else
-static CORE_NETIF_LINK_CHANGE_CB s_link_cb;
+/* CORE_NETIF_OPS_T is implemented by each platform's netif ops file. */
 
-static void __link_cb_shim(TKL_WIRED_STAT_E status)
-{
-    if (s_link_cb) {
-        s_link_cb((CORE_NETIF_LINK_STAT_E)status);
-    }
-}
+/* CORE_FS_OPS_T: file and directory API. Platforms without a TKL file system
+ * leave the card absent; core_fs.c only fails when a caller actually uses it. */
+#if defined(TUYAOPEN_HAS_TKL_FS)
 
-static OPERATE_RET __set_link_cb(CORE_NETIF_LINK_CHANGE_CB cb)
-{
-    s_link_cb = cb;
-    return tkl_wired_set_status_cb(__link_cb_shim);
-}
-
-#if !defined(__linux__)
-CORE_NETIF_OPS_T core_netif_ops_platform = {
-    .get_ip      = tkl_wired_get_ip,
-    .set_link_cb = __set_link_cb,
-};
-#endif
-#endif
-
-/* CORE_FS_OPS_T: file and directory API */
 CORE_FS_OPS_T core_fs_ops_platform = {
     //! file
     .fopen   = tkl_fopen,
@@ -163,6 +138,12 @@ CORE_FS_OPS_T core_fs_ops_platform = {
     .dir_name         = tkl_dir_name,
     .dir_is_directory = tkl_dir_is_directory,
 };
+
+#else
+
+CORE_FS_OPS_T core_fs_ops_platform = { 0 };
+
+#endif /* TUYAOPEN_HAS_TKL_FS */
 
 /* CORE_BLUETOOTH_OPS_T: peripheral GAP / GATT server API */
 #if defined(ENABLE_BLUETOOTH) && (ENABLE_BLUETOOTH == 1) && defined(TUYAOPEN_HAS_TKL_BLE)
@@ -192,7 +173,11 @@ CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_DESC_DISC_TYPE_T, TKL_BLE_GATT_DESC_DISC_TY
 CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_DATA_REPORT_T, TKL_BLE_DATA_REPORT_T);
 CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_SUBSCRIBE_EVT_T, TKL_BLE_SUBSCRBE_EVT_T);
 CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_READ_CHAR_EVT_T, TKL_BLE_READ_CHAR_EVT_T);
-CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GAP_PARAMS_EVT_T, TKL_BLE_GAP_PARAMS_EVT_T);
+/* Some TKLs extend the GAP event union (e.g. extended advertising); the
+ * existing member offsets are unchanged, so require TKL >= core instead of
+ * an exact size match. */
+typedef char _core_ble_assert_CORE_BLE_GAP_PARAMS_EVT_T
+    [(sizeof(TKL_BLE_GAP_PARAMS_EVT_T) >= sizeof(CORE_BLE_GAP_PARAMS_EVT_T)) ? 1 : -1];
 CORE_BLE_LAYOUT_ASSERT(CORE_BLE_GATT_PARAMS_EVT_T, TKL_BLE_GATT_PARAMS_EVT_T);
 
 /* offsetof checks for the event fields read by core */

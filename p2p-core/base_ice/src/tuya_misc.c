@@ -9,6 +9,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "tuya_log.h"
+#include "core_log.h"
+#if defined(P2P_STACK_WATERMARK_LOG) && (P2P_STACK_WATERMARK_LOG == 1)
+#include "tkl_thread.h"
+#endif
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
@@ -39,7 +43,7 @@ uint64_t tuya_uv_hrtime2(void)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (((uint64_t)ts.tv_sec) * NANOSEC + ts.tv_nsec);
 #else
-    /* MCU: use CORE tick (ms) — avoid glibc-only CLOCK_* / clock_gettime decls */
+    /* Ports without POSIX clock_gettime: use the CORE tick (ms). */
     return (uint64_t)core_system_get_millisecond() * 1000000ULL;
 #endif
 }
@@ -69,6 +73,32 @@ int32_t tuya_p2p_misc_check_timeout(uint64_t tbegin, uint32_t timeout)
     } else {
         return 0;
     }
+}
+
+/*
+ * Diagnostic used while tuning stack sizes. Must be called from the
+ * thread being measured: tkl_thread_get_id() returns the caller's task.
+ */
+void tuya_p2p_log_thread_stack(const char *name, uint32_t requested_bytes)
+{
+#if defined(P2P_STACK_WATERMARK_LOG) && (P2P_STACK_WATERMARK_LOG == 1)
+    TKL_THREAD_HANDLE self = NULL;
+    uint32_t free_bytes = 0;
+    uint32_t used_bytes;
+
+    if (name == NULL || tkl_thread_get_id(&self) != OPRT_OK || self == NULL) {
+        return;
+    }
+    if (tkl_thread_get_watermark(self, &free_bytes) != OPRT_OK) {
+        return;
+    }
+    used_bytes = (requested_bytes > free_bytes) ? (requested_bytes - free_bytes) : 0;
+    PR_NOTICE("stack %s: req=%u free=%u used=%u", name, (unsigned)requested_bytes,
+              (unsigned)free_bytes, (unsigned)used_bytes);
+#else
+    (void)name;
+    (void)requested_bytes;
+#endif
 }
 
 void tuya_p2p_misc_set_blocking(int fd, int blocking)
@@ -347,7 +377,14 @@ int tuya_p2p_misc_generate_cert(unsigned char *pkey, size_t pkey_len, unsigned c
     mbedtls_x509write_crt_set_version(&crt, RTC_DEFAULT_TLS_CERT_VERSION);
     mbedtls_x509write_crt_set_md_alg(&crt, RTC_DEFAULT_TLS_CERT_MD);
 
+#if defined(MBEDTLS_DEPRECATED_REMOVED)
+    /* mbedtls 3.x hides the mbedtls_mpi serial helper when
+     * MBEDTLS_DEPRECATED_REMOVED is set; the raw byte form is the
+     * supported API there. */
+    ret = mbedtls_x509write_crt_set_serial_raw(&crt, (const unsigned char *)str_serial, strlen(str_serial));
+#else
     ret = mbedtls_x509write_crt_set_serial(&crt, &serial);
+#endif
     if (ret != 0) {
         mbedtls_strerror(ret, buf, 1024);
         tuya_p2p_log_error(" failed\n  !  mbedtls_x509write_crt_set_serial "

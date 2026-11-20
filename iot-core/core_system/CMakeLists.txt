@@ -8,8 +8,8 @@ target_include_directories(core_system PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 
 )
-# core_api.h is an umbrella header that includes sibling module headers (the
-# esp-idf REQUIRES semantics), so propagation must be PUBLIC.
+# core_api.h is an umbrella header that includes sibling module headers, so
+# propagation must be PUBLIC.
 target_link_libraries(core_system
     PUBLIC tuya_transport tuya_utilities
     PRIVATE tuyaopen-headers

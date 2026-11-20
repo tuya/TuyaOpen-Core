@@ -14,6 +14,7 @@
 #include "tuya_ipc_p2p_error.h"
 #include "tuya_ipc_p2p_inner.h"
 #include "tuya_ipc_p2p_common.h"
+#include "tuya_iot.h"
 #include "tuya_ipc_media_stream_event.h"
 #include "tuya_ipc_media_stream.h"
 #include "tuya_ipc_media_adapter.h"
@@ -39,6 +40,12 @@ typedef enum {
 #define TUYA_IPC_P2P_DEFAULT_CAMERA (0)
 #define P2P_RTP_PACK_LEN            (1100 + 128) // RTP packet buffer size
 #define P2P_RECV_TIMEOUT            (30)
+/* A live media frame older than two frame intervals is already stale. Bound the
+ * send wait so one slow KCP queue cannot park the shared media thread (and the
+ * next session's first frame) indefinitely. */
+#ifndef P2P_MEDIA_SEND_TIMEOUT_MS
+#define P2P_MEDIA_SEND_TIMEOUT_MS (200u)
+#endif
 
 #define P2P_CHECK_USER_TIMES (10000) // 10s
 // Password synchronization structure
@@ -74,12 +81,20 @@ typedef struct P2P_CMD_PARSE_ {
 
 #define OFFSET(TYPE, MEMBER) ((size_t)(&(((TYPE *)0)->MEMBER)))
 
-#define STACK_SIZE_P2P_MEDIA_SEND 98304
-#define STACK_SIZE_P2P_MEDIA_RECV 65536
-#define STACK_SIZE_P2P_CMD_SEND   65536
-#define STACK_SIZE_P2P_CMD_RECV   65536
-#define STACK_SIZE_P2P_DETECT     65536
-#define STACK_SIZE_P2P_LISTEN     131072
+/*
+ * Configurable via Kconfig (P2P_*_STACK_SIZE). The fallbacks match the
+ * measured stack watermarks; override in the app config if a build
+ * needs more.
+ */
+#ifndef P2P_MEDIA_SEND_STACK_SIZE
+#define P2P_MEDIA_SEND_STACK_SIZE (4 * 1024)
+#endif
+#ifndef P2P_CMD_RECV_STACK_SIZE
+#define P2P_CMD_RECV_STACK_SIZE (4 * 1024)
+#endif
+#ifndef P2P_LISTEN_STACK_SIZE
+#define P2P_LISTEN_STACK_SIZE (4 * 1024)
+#endif
 
 typedef struct {
     int client;
@@ -148,6 +163,7 @@ typedef struct {
     uint32_t dbg_vsend_ok;                             // DBG: successful video RTP sends
     uint32_t dbg_vsend_skip;                           // DBG: skipped non-I before first key
     uint32_t dbg_vget_fail;                            // DBG: get-frame callback failures
+    uint64_t dbg_vsend_diag_ms;                        // DBG: last stage line for this live session
     uint32_t                  dbg_vsend_fail;                           // video sends that returned an error
     uint32_t                  dbg_asend_fail;                           // audio sends that returned an error
     uint32_t                  dbg_ashed;                                // audio frames dropped past the deadline
@@ -216,8 +232,14 @@ int rtp_pack_packet_handler(void *param, const void *packet, int bytes, uint32_t
 void ctx_listen_thread_func(void *arg)
 {
     (void)arg;
+    uint64_t last_wm_ms = 0;
     PR_NOTICE("p2p_listen");
     while (1) {
+        uint64_t wm_now = core_system_get_millisecond();
+        if (wm_now - last_wm_ms >= P2P_STACK_WATERMARK_INTERVAL_MS) {
+            last_wm_ms = wm_now;
+            tuya_p2p_log_thread_stack("p2p_listen", P2P_LISTEN_STACK_SIZE);
+        }
         int session_id;
         session_id = tuya_p2p_rtc_listen();
         if (session_id < 0) {
@@ -237,7 +259,7 @@ OPERATE_RET p2p_rtc_listen_start()
 {
     THREAD_CFG_T param = {0};
     param.priority = THREAD_PRIO_3;
-    param.stackDepth = 128 * 1024;
+    param.stackDepth = P2P_LISTEN_STACK_SIZE;
     param.thrdname = "tuya_p2p_listen_task";
     if (g_listen_start) {
         PR_ERR("p2p listen thread already started");
@@ -293,6 +315,8 @@ OPERATE_RET p2p_deal_with_listen(int session)
             PR_ERR("resend p2p passwd to service");
             if (OPRT_OK == tuya_ipc_p2p_update_pw(sg_p2p_session->str_P2p_auth.p2p_passwd)) {
                 userCheckEnable = TRUE;
+            } else {
+                PR_ERR("resend p2p passwd failed");
             }
         }
         PR_ERR("Close session[%d]", session);
@@ -337,6 +361,27 @@ RET:
  *  Output: none
  *  Return:
  ***********************************************************/
+static void __p2p_auth_sign(const char *passwd, const char *local_key, char sign[32 + 1])
+{
+    CORE_HASH_HANDLE md5;
+    unsigned char    decrypt[16];
+    int              offset = 0;
+
+    core_md5_create_init(&md5);
+    core_md5_starts_ret(md5);
+    core_md5_update_ret(md5, (uint8_t *)passwd, strlen(passwd));
+    core_md5_update_ret(md5, (uint8_t *)"||", 2);
+    core_md5_update_ret(md5, (uint8_t *)local_key, strlen(local_key));
+    core_md5_finish_ret(md5, decrypt);
+    core_md5_free(md5);
+
+    for (int i = 0; i < 16; i++) {
+        sprintf(&sign[offset], "%02x", decrypt[i]);
+        offset += 2;
+    }
+    sign[offset] = '\0';
+}
+
 OPERATE_RET p2p_get_userinfo(int session, int p2pType)
 {
     char *read_buff = NULL;
@@ -414,33 +459,38 @@ OPERATE_RET p2p_get_userinfo(int session, int p2pType)
         return OPRT_COM_ERROR;
     }
 
-    char sign[32 + 1] = {0};
-    CORE_HASH_HANDLE md5;
-    core_md5_create_init(&md5);
-    core_md5_starts_ret(md5);
-    unsigned char decrypt[16];
-    core_md5_update_ret(md5, (uint8_t *)(sg_p2p_session->str_P2p_auth.p2p_passwd),
-                       strlen(sg_p2p_session->str_P2p_auth.p2p_passwd));
-    core_md5_update_ret(md5, (uint8_t *)"||", 2);
-    core_md5_update_ret(md5, (uint8_t *)(sg_p2p_session->str_P2p_auth.gw_local_key),
-                       strlen(sg_p2p_session->str_P2p_auth.gw_local_key));
-    core_md5_finish_ret(md5, decrypt);
-    core_md5_free(md5);
+    char cached_sign[32 + 1] = {0};
+    char sign[32 + 1]        = {0};
 
-    int offset = 0;
-    int i = 0;
-    for (i = 0; i < 16; i++) {
-        sprintf(&sign[offset], "%02x", decrypt[i]);
-        offset += 2;
+    /* p2p_init() snapshots the activation data once. A device that is
+     * re-activated in the same boot (reset -> netcfg, no reboot) gets a new
+     * local key, so the snapshot no longer matches the peer's signature and
+     * every session fails auth until the device reboots. Sign with the live
+     * key and keep the cached copy in sync for the resend path. */
+    __p2p_auth_sign(sg_p2p_session->str_P2p_auth.p2p_passwd,
+                    sg_p2p_session->str_P2p_auth.gw_local_key, cached_sign);
+
+    const char *live_lk = tuya_iot_localkey_get(tuya_iot_client_get());
+    if (NULL != live_lk && '\0' != live_lk[0] &&
+        0 != strcmp(sg_p2p_session->str_P2p_auth.gw_local_key, live_lk)) {
+        PR_WARN("p2p local key changed after re-activation, refresh cached auth");
+        snprintf(sg_p2p_session->str_P2p_auth.gw_local_key,
+                 sizeof(sg_p2p_session->str_P2p_auth.gw_local_key), "%s", live_lk);
     }
-    sign[offset] = 0;
 
-    if (strcmp(strUserInfo.user, sg_p2p_session->str_P2p_auth.p2p_name) == 0 && strcmp(strUserInfo.passwd, sign) == 0) {
+    __p2p_auth_sign(sg_p2p_session->str_P2p_auth.p2p_passwd,
+                    sg_p2p_session->str_P2p_auth.gw_local_key, sign);
+
+    if (strcmp(strUserInfo.user, sg_p2p_session->str_P2p_auth.p2p_name) == 0 &&
+        strcmp(strUserInfo.passwd, sign) == 0) {
         PR_DEBUG("auth success");
         return OPRT_OK;
     }
 
-    PR_ERR("auth failed");
+    /* Keep both signatures in the log: matching 'live' but not 'cached' means
+     * the activation key changed after p2p_init(); matching neither means the
+     * cloud has not picked up the device password yet. */
+    PR_ERR("auth failed: peer=%s cached=%s live=%s", strUserInfo.passwd, cached_sign, sign);
 
     return OPRT_COM_ERROR;
 }
@@ -584,12 +634,36 @@ OPERATE_RET p2p_send_rtp_data(int client, int channel, char *buff, int length)
         return OPRT_INVALID_PARM;
     }
     int ret = 0;
+    uint64_t send_t0;
+    uint64_t send_elapsed;
+    static uint64_t s_slow_log_ms;
+    BOOL_T   send_diag;
     // Send data
     if ((0 == (P2P_VIDEO & sg_p2p_session->cmd)) && (0 == (P2P_PB_VIDEO & sg_p2p_session->cmd)) &&
         (0 == (P2P_AUDIO & sg_p2p_session->cmd)) && (0 == (P2P_PB_AUDIO & sg_p2p_session->cmd))) {
         return OPRT_OK;
     }
-    ret = tuya_p2p_rtc_send_data(sg_p2p_session->session, channel, buff, length, -1);
+    /* The first video send is the one that exposes a stalled media thread:
+     * "start" without "done" means the wait is inside the send. */
+    send_diag = (channel == TUYA_VDATA_CHANNEL) && (P2P_VIDEO & sg_p2p_session->cmd) &&
+                (sg_p2p_session->dbg_vsend_ok == 0);
+    send_t0 = core_system_get_millisecond();
+    if (send_diag) {
+        PR_NOTICE("vsend send start: ch=%d len=%d", channel, length);
+    }
+    ret = tuya_p2p_rtc_send_data(sg_p2p_session->session, channel, buff, length, (int32_t)P2P_MEDIA_SEND_TIMEOUT_MS);
+    send_elapsed = core_system_get_millisecond() - send_t0;
+    if (send_diag) {
+        PR_NOTICE("vsend send done: ch=%d len=%d ret=%d elapsed=%ums", channel, length, ret,
+                  (unsigned)send_elapsed);
+    }
+    /* A slow send after the first frame (or on the audio channel) is how a
+     * channel_lock / ICE-output stall shows up without a blocking first frame. */
+    if (send_elapsed >= 100 && (send_t0 - s_slow_log_ms) >= 1000) {
+        s_slow_log_ms = send_t0;
+        PR_NOTICE("vsend send slow: ch=%d len=%d ret=%d elapsed=%ums", channel, length, ret,
+                  (unsigned)send_elapsed);
+    }
     if (ret == length) {
         return OPRT_OK;
     }
@@ -660,7 +734,9 @@ static void __p2p_ext_protocol_pack(int client, int type, char *p_result, int *p
     return;
 }
 
+#ifndef P2P_TX_LATENCY_BUDGET_MS
 #define P2P_TX_LATENCY_BUDGET_MS 700u
+#endif
 
 #define P2P_TX_KEYFRAME_ROOM 3u
 
@@ -671,12 +747,15 @@ static void __p2p_ext_protocol_pack(int client, int type, char *p_result, int *p
  * @param[out] send_free_size room left in the send queue, may be NULL
  * @return occupancy in percent, above 100 when over budget, -1 if unavailable
  */
-static int __p2p_video_fill_pct(int len, int *write_size, int *send_free_size)
+static int __p2p_video_fill_pct(int len, int *write_size, int *send_free_size, int *budget_out)
 {
     uint32_t used = 0;
     uint32_t kbps;
     int      budget, keyframe_room, pct;
 
+    if (budget_out != NULL) {
+        *budget_out = 0;
+    }
     if (sg_p2p_session == NULL) {
         return -1;
     }
@@ -702,6 +781,9 @@ static int __p2p_video_fill_pct(int len, int *write_size, int *send_free_size)
     }
     if (budget < 1) {
         budget = 1;
+    }
+    if (budget_out != NULL) {
+        *budget_out = budget;
     }
 
     pct = (int)((int64_t)used * 100 / budget);
@@ -785,7 +867,8 @@ static OPERATE_RET __p2p_check_free_buffer_size(int client, int channel, int len
     (void)client; /* one session, one transport - the id comes from the context */
 
     if (channel == TUYA_VDATA_CHANNEL) {
-        int pct = __p2p_video_fill_pct(len, &writeSize, &sendFreeSize);
+        int budget = 0;
+        int pct = __p2p_video_fill_pct(len, &writeSize, &sendFreeSize, &budget);
 
         if (pct < 0) {
             return OPRT_COM_ERROR;
@@ -793,8 +876,9 @@ static OPERATE_RET __p2p_check_free_buffer_size(int client, int channel, int len
 
         if (pct > 100) {
             if ((sg_p2p_session->tx_full_cnt % 100) == 0) {
-                PR_WARN("video queue %d bytes is %d pct of the %ums budget, shedding frames", writeSize, pct,
-                        P2P_TX_LATENCY_BUDGET_MS);
+                PR_WARN("video queue %d bytes is %d pct of the %dms budget (%d bytes, keyframe floor "
+                        "included), shedding frames",
+                        writeSize, pct, P2P_TX_LATENCY_BUDGET_MS, budget);
             }
             sg_p2p_session->tx_full_cnt++;
             return OPRT_RESOURCE_NOT_READY;
@@ -839,7 +923,14 @@ static OPERATE_RET __p2p_check_free_buffer_size(int client, int channel, int len
 
 #define RC_MIN_CHANGE_PCT 5u
 
-#define RC_WARMUP_WINDOWS 2u
+/* One-second decision windows skipped at the start of a session. The first
+ * seconds carry the keyframe burst plus the backlog queued before the peer was
+ * ready, and the link estimator has not converged yet: deciding on those
+ * samples dropped the encoder to its lowest preset straight after start-up and
+ * the 8%/s climb back was visible as a blurry picture for ~15 s. Four windows
+ * let the backlog drain so the first decision sees the real link. Frame
+ * shedding still protects the queue during this window. */
+#define RC_WARMUP_WINDOWS 4u
 
 static void __p2p_rate_control(P2P_SESSION_T *pSession)
 {
@@ -1477,6 +1568,7 @@ static int __p2p_session_trans_video_start(P2P_SESSION_T *pSession)
     pSession->dbg_vsend_ok = 0;
     pSession->dbg_vsend_skip = 0;
     pSession->dbg_vget_fail = 0;
+    pSession->dbg_vsend_diag_ms = 0;
     pSession->video_frame_pending = FALSE;
 
     pSession->rc_base_kbps = pSession->av_Info.bitrate[p2p_get_chn_idx(pSession->cur_clarity)];
@@ -2348,11 +2440,17 @@ static void __p2p_cmd_recv_proc(void *pArg)
 {
     P2P_SESSION_T *pSession = NULL;
     int ret;
+    uint64_t last_wm_ms = 0;
 
     memset(&sg_p2p_session->proto_parse, 0x00, sizeof(sg_p2p_session->proto_parse));
     sg_p2p_session->proto_parse.read_size = P2P_CMD_HEAD_LEN;
     sg_p2p_session->proto_parse.flag = READ_HEADER_PART;
     while (core_thread_get_state(sg_p2p_session->cmd_recv_proc_thread) == THREAD_STATE_RUNNING) {
+        uint64_t wm_now = core_system_get_millisecond();
+        if (wm_now - last_wm_ms >= P2P_STACK_WATERMARK_INTERVAL_MS) {
+            last_wm_ms = wm_now;
+            tuya_p2p_log_thread_stack("p2p_cmd_recv", P2P_CMD_RECV_STACK_SIZE);
+        }
         if (P2P_SESSION_IDLE == sg_p2p_session->status) {
             core_system_sleep(5);
             continue;
@@ -2388,6 +2486,18 @@ static void __p2p_cmd_recv_proc(void *pArg)
     return;
 }
 
+/* Until the first video frame of this live session reaches the wire, log one
+ * stage line per second. If the lines stop, the last one names the step that
+ * is blocking: rate control, the get-frame callback, or the RTP send. */
+#define __VSEND_DIAG(ps, fmt, ...)                                            \
+    do {                                                                      \
+        uint64_t _now = core_system_get_millisecond();                        \
+        if ((ps)->dbg_vsend_ok == 0 && (_now - (ps)->dbg_vsend_diag_ms) >= 1000) { \
+            (ps)->dbg_vsend_diag_ms = _now;                                   \
+            PR_DEBUG("vsend[%d]: " fmt, (ps)->session, ##__VA_ARGS__);        \
+        }                                                                     \
+    } while (0)
+
 /***********************************************************
  *  Function: __p2p_video_send_proc
  *  Note:Video data transmission thread
@@ -2400,8 +2510,14 @@ static void __p2p_media_send_proc(void *pArg)
     int index = 0;
     P2P_SESSION_T *pSession = NULL;
     OPERATE_RET op_ret = -1;
+    uint64_t last_wm_ms = 0;
 
     while (core_thread_get_state(sg_p2p_session->video_send_proc_thread) == THREAD_STATE_RUNNING) {
+        uint64_t wm_now = core_system_get_millisecond();
+        if (wm_now - last_wm_ms >= P2P_STACK_WATERMARK_INTERVAL_MS) {
+            last_wm_ms = wm_now;
+            tuya_p2p_log_thread_stack("p2p_media_send", P2P_MEDIA_SEND_STACK_SIZE);
+        }
         if (P2P_SESSION_IDLE == sg_p2p_session->status) {
             core_system_sleep(5);
             continue;
@@ -2437,7 +2553,10 @@ static void __p2p_media_send_proc(void *pArg)
         core_mutex_unlock(pSession->cmutex);
 
         if ((P2P_VIDEO & cmd) && !(P2P_PB_VIDEO & cmd)) {
+            __VSEND_DIAG(pSession, "loop cmd=0x%x pending=%d fill=%u", (unsigned)cmd,
+                         (int)pSession->video_frame_pending, (unsigned)pSession->tx_fill_pct);
             __p2p_rate_control(pSession);
+            __VSEND_DIAG(pSession, "after rate control");
         }
 
         uint32_t yield_ms = 0;
@@ -2450,10 +2569,14 @@ static void __p2p_media_send_proc(void *pArg)
                 OPERATE_RET  buf_ret;
 
                 if (!pSession->video_frame_pending) {
+                    __VSEND_DIAG(pSession, "get frame");
                     op_ret = sg_p2p_session->on_get_video_frame_callback(pMediaFrame);
                     if (op_ret != OPRT_OK) {
+                        __VSEND_DIAG(pSession, "get frame: not ready ret=%d", op_ret);
                         yield_ms = 10;
                     } else {
+                        __VSEND_DIAG(pSession, "got frame key=%d size=%u",
+                                     (int)(eVideoIFrame == pMediaFrame->type), (unsigned)pMediaFrame->size);
                         pSession->video_frame_pending = TRUE;
                     }
                 }
@@ -2470,7 +2593,7 @@ static void __p2p_media_send_proc(void *pArg)
                     if (TRUE == pSession->video_need_iframe) {
                         pSession->video_frame_pending = FALSE;
 
-                        (void)__p2p_video_fill_pct(0, NULL, NULL);
+                        (void)__p2p_video_fill_pct(0, NULL, NULL, NULL);
                         if (pSession->tx_fill_pct < P2P_TX_DRAINED_PCT) {
                             (void)__p2p_request_i_frame(pSession);
                         }
@@ -2486,6 +2609,8 @@ static void __p2p_media_send_proc(void *pArg)
 
                         buf_ret = __p2p_check_free_buffer_size(index, TUYA_VDATA_CHANNEL, (int)pMediaFrame->size);
                         if (buf_ret != OPRT_OK) {
+                            __VSEND_DIAG(pSession, "defer frame ret=%d fill=%u%%", buf_ret,
+                                         (unsigned)pSession->tx_fill_pct);
 
                             pSession->video_need_iframe = TRUE;
                             pSession->video_frame_pending = FALSE;
@@ -2500,8 +2625,15 @@ static void __p2p_media_send_proc(void *pArg)
                         if (buf_ret == OPRT_OK) {
                             if (OPRT_OK == op_ret) {
                                 pSession->video_frame_pending = FALSE;
+                                pSession->dbg_vsend_ok++;
+                                if (pSession->dbg_vsend_ok == 1) {
+                                    PR_NOTICE("p2p video first RTP sent: key=%d size=%u",
+                                              (int)(eVideoIFrame == pMediaFrame->type),
+                                              (unsigned)pMediaFrame->size);
+                                }
                             } else {
                                 pSession->dbg_vsend_fail++;
+                                __VSEND_DIAG(pSession, "send frame failed ret=%d", op_ret);
                                 if ((pSession->dbg_vsend_fail % 10) == 1) {
                                     PR_ERR("video send failed count = [%u] ret=%d", pSession->dbg_vsend_fail, op_ret);
                                 }
@@ -2509,6 +2641,11 @@ static void __p2p_media_send_proc(void *pArg)
                                 if (OPRT_RESOURCE_NOT_READY != op_ret) {
                                     PR_WARN("dropping unsendable frame (%u bytes, ret %d)",
                                             (uint32_t)pMediaFrame->size, op_ret);
+                                    /* The decoder loses the reference chain with this
+                                     * frame; ask for a new key frame instead of
+                                     * continuing with P frames. */
+                                    pSession->video_need_iframe = TRUE;
+                                    (void)__p2p_request_i_frame(pSession);
                                     pSession->video_frame_pending = FALSE;
                                 }
                                 yield_ms = 200;
@@ -2640,6 +2777,7 @@ int __p2p_session_release_va(P2P_SESSION_T *pSession)
     pSession->dbg_vsend_ok = 0;
     pSession->dbg_vsend_skip = 0;
     pSession->dbg_vget_fail = 0;
+    pSession->dbg_vsend_diag_ms = 0;
     notify                        = pSession->on_disconnect_callback;
     core_mutex_unlock(pSession->cmutex);
 
@@ -2676,7 +2814,7 @@ OPERATE_RET p2p_init(const TUYA_IPC_P2P_VAR_T *p_var)
     // Start media-related threads
     THREAD_CFG_T thrd_param = {0};
     thrd_param.priority = THREAD_PRIO_2;
-    thrd_param.stackDepth = STACK_SIZE_P2P_CMD_RECV;
+    thrd_param.stackDepth = P2P_CMD_RECV_STACK_SIZE;
     thrd_param.thrdname = (char *)"p2p_cmd_recv";
     ret = core_thread_create_and_start(&(sg_p2p_session->cmd_recv_proc_thread), NULL, NULL, __p2p_cmd_recv_proc, NULL,
                                       &thrd_param);
@@ -2684,7 +2822,7 @@ OPERATE_RET p2p_init(const TUYA_IPC_P2P_VAR_T *p_var)
         PR_ERR("create p2p_cmd_recv task failed");
         goto RET;
     }
-    thrd_param.stackDepth = STACK_SIZE_P2P_MEDIA_SEND;
+    thrd_param.stackDepth = P2P_MEDIA_SEND_STACK_SIZE;
     thrd_param.thrdname = (char *)"p2p_media_send";
     ret = core_thread_create_and_start(&(sg_p2p_session->video_send_proc_thread), NULL, NULL, __p2p_media_send_proc,
                                       NULL, &thrd_param);
@@ -2701,7 +2839,7 @@ OPERATE_RET p2p_init(const TUYA_IPC_P2P_VAR_T *p_var)
 
     memset(&sg_p2p_session->media_frame, 0, sizeof(sg_p2p_session->media_frame));
     /* 300KB media frame buffer: keep it off the stack */
-    sg_p2p_session->media_frame.data = (uint8_t *)Malloc(bufSize);
+    sg_p2p_session->media_frame.data = (uint8_t *)core_p2p_malloc(bufSize);
     if (sg_p2p_session->media_frame.data == NULL) {
         PR_ERR("Malloc media_frame %d failed", bufSize);
         ret = OPRT_MALLOC_FAILED;
@@ -2718,7 +2856,8 @@ OPERATE_RET p2p_init(const TUYA_IPC_P2P_VAR_T *p_var)
     sg_p2p_session->media_audio_frame.data = (uint8_t *)Malloc(bufSize);
     if (sg_p2p_session->media_audio_frame.data == NULL) {
         PR_ERR("Malloc media_audio_frame %d failed", bufSize);
-        Free(sg_p2p_session->media_frame.data);
+        Free(sg_p2p_session->media_audio_frame.data);
+        core_p2p_free(sg_p2p_session->media_frame.data);
         sg_p2p_session->media_frame.data = NULL;
         ret = OPRT_MALLOC_FAILED;
         goto RET;

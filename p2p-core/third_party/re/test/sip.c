@@ -1,0 +1,1234 @@
+/**
+ * @file sip.c SIP Testcode
+ *
+ * Copyright (C) 2010 Creytiv.com
+ */
+#include <string.h>
+#include <re.h>
+#include "test.h"
+
+
+#define DEBUG_MODULE "siptest"
+#define DEBUG_LEVEL 5
+#include <re_dbg.h>
+
+
+static int sip_addr_encode(const struct sip_addr *addr, struct mbuf *mb)
+{
+	bool anglebr = addr->dname.p || addr->uri.params.p;
+	int err;
+
+	if (addr->dname.p) {
+		err = mbuf_printf(mb, "\"%r\" ", &addr->dname);
+		if (err)
+			return err;
+	}
+
+	if (anglebr) {
+		err = mbuf_write_u8(mb, '<');
+		if (err)
+			return err;
+	}
+
+	err = mbuf_printf(mb, "%H", uri_encode, &addr->uri);
+	if (err)
+		return err;
+
+	if (anglebr) {
+		err = mbuf_write_u8(mb, '>');
+		if (err)
+			return err;
+	}
+
+	if (addr->params.p) {
+		err = mbuf_write_pl(mb, &addr->params);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
+
+int test_sip_addr(void)
+{
+	const char *addrv[] = {
+
+		/* With Display name */
+		"\"Agmund Bolt\" <sip:agmund@bolt.com:5060;lr;user=phone>",
+		"\"Agmund Bolt\" <sip:agmund@bolt.com:5060;user=phone>",
+		"\"Agmund Bolt\" <sip:agmund@bolt.com:5060>",
+		"\"Agmund Bolt\" <sip:agmund@bolt.com>",
+		"\"Agmund Bolt\" <sip:bolt.com:5060>",
+		"\"Agmund Bolt\" <sip:bolt.com>",
+
+		"<sip:user@host:5060;transport=udp>",
+		"<sip:user@host:5060>",
+		"<sip:host:5060>",
+		"<sip:host>",
+		"<sip:user@81.187.91.2:28481>",
+		"<sip:user@81.187.91.2:28481>",
+		"<sip:81.187.91.2:28481>",
+		"<sips:81.187.91.2:28481>",
+
+		/* RFC 3261 */
+		"<sip:alice@atlanta.com>",
+		"<sips:alice@atlanta.co"
+		  "?subject=project%20x&priority=urgent>",
+		"<sips:1212@gateway.com>",
+		"<sip:alice@192.0.2.4>",
+		"<sip:atlanta.com;method=REGISTER?to=alice%40atlanta.com>",
+		"<sip:alice;day=tuesday@atlanta.com>",
+
+		/* With address parameters */
+		"\"Agmund Bolt\" <sip:agmund@bolt.com:5060;lr;user=phone>"
+		    ";tag=foo123",
+		"\"Agmund Bolt\" <sip:agmund@bolt.com:5060;lr;user=phone>"
+		   ";tag=foo123;bar=9d7j3",
+
+		/* RFC 5118 - SIP Torture Test Messages for IPv6 */
+		"\"Caller\" <sip:caller@[2001:db8::1]>",
+		"\"Caller\" <sip:caller@[2001:db8::1]:5080>",
+
+		/* gruu */
+		"\"hei\" <sip:alfred1@10.0.0.4:32829;keepalive=crlf>"
+		";expires=3845"
+		";gruu=\"sip:alfred1@devel.sip.su.se"
+		";opaque=t49sgjnwu8;gruu\""
+		";+sip.instance="
+		"\"<urn:uuid:6B3639EB-77A3-4882-97F7-A357A1F1B4D0>\""
+		";reg-id=1",
+	};
+	struct sip_addr addr;
+	struct mbuf mb;
+	int err = EINVAL;
+	size_t i;
+
+	mbuf_init(&mb);
+
+	for (i=0; i<RE_ARRAY_SIZE(addrv); i++) {
+		struct pl pl, pl2;
+
+		pl_set_str(&pl, addrv[i]);
+
+		/* Decode */
+		err = sip_addr_decode(&addr, &pl);
+		if (err) {
+			DEBUG_WARNING("sip_addr: test %u: sip_addr_decode()"
+				      " failed (%s) (%m)\n",
+				      i, addrv[i], err);
+			goto out;
+		}
+
+		DEBUG_INFO("addr: dname=(%r) uri=(%r@%r) params=(%r)\n",
+			   &addr.dname, &addr.uri.user, &addr.uri.host,
+			   &addr.params);
+
+		/* Encode */
+		mbuf_reset(&mb);
+		err = sip_addr_encode(&addr, &mb);
+		if (err) {
+			DEBUG_INFO("sip_addr: sip_addr_encode failed (%m)\n",
+				   err);
+			goto out;
+		}
+
+		/* Compare */
+		pl2.p = (const char *)mb.buf;
+		pl2.l = mb.end;
+		err = pl_cmp(&pl2, &pl);
+		if (err) {
+			DEBUG_WARNING("%u: sip addr cmp: ref='%r' gen='%r'\n",
+				      i, &pl, &pl2);
+			goto out;
+		}
+	}
+
+	err = 0;
+
+ out:
+	mbuf_reset(&mb);
+	return err;
+}
+
+
+int test_sip_via(void)
+{
+	struct {
+		enum sip_transp tp;
+		const char *host;
+		uint16_t port;
+		const char *branch;
+	} testv[] = {
+		{SIP_TRANSP_UDP, "1.2.3.4",         1234, "z9ghkdkasd"},
+		{SIP_TRANSP_TCP, "123.123.123.123", 0,    "b0ajsd01abcdef918"},
+		{SIP_TRANSP_TCP, "myhost.com",      0,    "b0ajsd01ab2838475"},
+		{SIP_TRANSP_TCP, "fe80::215:58ff:fe2d:90ab", 5060,
+		 "b0ajs01cde38475"},
+		{SIP_TRANSP_TLS, "fe80::215:58ff:fe2d:90ab", 0, "47daasd5"}
+	};
+	struct sip_msg *msg = NULL;
+	struct mbuf *mb;
+	int err = EINVAL;
+	size_t i;
+
+	mb = mbuf_alloc(1024);
+	if (!mb) {
+		err = ENOMEM;
+		goto out;
+	}
+
+	for (i=0; i<RE_ARRAY_SIZE(testv); i++) {
+		bool ipaddr;
+		struct sa addr;
+
+		mbuf_rewind(mb);
+
+		/* Encode message */
+		err = mbuf_printf(mb,
+				  "BYE sip:foo SIP/2.0\r\n"
+				  "Via : SIP / 2.0 / %s ",
+				  sip_transp_name(testv[i].tp));
+		if (err)
+			goto out;
+
+		ipaddr = !sa_set_str(&addr, testv[i].host, testv[i].port);
+
+		if (ipaddr && AF_INET6 == sa_af(&addr))
+			err = mbuf_printf(mb, "[%s]", testv[i].host);
+		else
+			err = mbuf_printf(mb, "%s", testv[i].host);
+		if (err)
+			goto out;
+
+		if (testv[i].port)
+			err = mbuf_printf(mb, ":%u", testv[i].port);
+		err |= mbuf_printf(mb, ";branch=%s\r\n\r\n",
+				   testv[i].branch);
+		if (err)
+			goto out;
+
+		mbuf_set_pos(mb, 0);
+
+		/* Decode message */
+
+		err = sip_msg_decode(&msg, mb);
+		if (err) {
+			goto out;
+		}
+
+		/* Compare */
+
+		if (msg->via.tp != testv[i].tp) {
+			DEBUG_WARNING("%u: via transp: '%s' != '%s'\n",
+				      i, sip_transp_name(msg->via.tp),
+				      sip_transp_name(testv[i].tp));
+			goto out;
+		}
+
+		/* Numeric IP address */
+		if (ipaddr) {
+			if (!sa_cmp(&msg->via.addr, &addr, SA_ALL)) {
+				DEBUG_WARNING("%u: via addr: addr=%J\n",
+					      i, &msg->via.addr);
+				err = EINVAL;
+				goto out;
+			}
+		}
+		else {
+			err = pl_strcmp(&msg->via.sentby, testv[i].host);
+			if (err) {
+				DEBUG_WARNING("%u: via uri: sentby='%r'\n",
+					      i, &msg->via.sentby);
+				goto out;
+			}
+
+			if (sa_port(&msg->via.addr) != testv[i].port) {
+				DEBUG_WARNING("%u: via: port mismatch (%u)\n",
+					      i, sa_port(&msg->via.addr));
+				err = EINVAL;
+				goto out;
+			}
+		}
+
+		err = pl_strcmp(&msg->via.branch, testv[i].branch);
+		if (err) {
+			DEBUG_WARNING("%u: via branch: '%r' != '%s'\n",
+				      i, &msg->via.branch, testv[i].branch);
+			goto out;
+		}
+
+		msg = mem_deref(msg);
+	}
+
+	err = 0;
+ out:
+	mem_deref(mb);
+	mem_deref(msg);
+	return err;
+}
+
+
+struct apply {
+	uint32_t n;
+	int err;
+};
+
+
+static bool apply_handler(const struct sip_hdr *hdr, const struct sip_msg *msg,
+			  void *arg)
+{
+	const char *ref = "SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123";
+	struct apply *apply = arg;
+
+	(void)msg;
+	(void)arg;
+
+	if (hdr->id != SIP_HDR_VIA) {
+		apply->err = EINVAL;
+		return true;
+	}
+
+	apply->err = pl_strcmp(&hdr->val, ref);
+	if (apply->err) {
+		return true;
+	}
+
+	++apply->n;
+
+	return false;
+}
+
+
+int test_sip_apply(void)
+{
+	struct {
+		uint32_t n;
+		const char *msg;
+	} testv[] = {
+		{0,
+		 "Tull: tull\r\n"},
+		{1,
+		 "Via: SIP/2.0/UDP 123.45.67.89:12345"
+		 ";branch=z9hG4bK123\r\n"},
+		{1,
+		 "Via:   SIP/2.0/UDP 123.45.67.89:12345"
+		 ";branch=z9hG4bK123\r\n"},
+		{2,
+		 "Via: SIP/2.0/UDP 123.45.67.89:12345"
+		 ";branch=z9hG4bK123\r\n"
+		 "Via: SIP/2.0/UDP 123.45.67.89:12345"
+		 ";branch=z9hG4bK123\r\n"
+		},
+		{2,
+		 "Via: SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123,"
+		 " SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123\r\n"
+		},
+		{2,
+		 "v: SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123,"
+		 " SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123\r\n"
+		},
+		{2,
+		 "v: SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123"
+		 ",SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123\r\n"
+		},
+		{3,
+		 "Via: SIP/2.0/UDP 123.45.67.89:12345"
+		 ";branch=z9hG4bK123\r\n"
+		 "v: SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123\r\n"
+		 "Via: SIP/2.0/UDP 123.45.67.89:12345"
+		 ";branch=z9hG4bK123\r\n"
+		},
+		{3,
+		 "Via: SIP/2.0/UDP 123.45.67.89:12345"
+		 ";branch=z9hG4bK123\r\n"
+		 "Tull: tull\r\n"
+		 "v: SIP/2.0/UDP 123.45.67.89:12345;branch=z9hG4bK123\r\n"
+		 "Via: SIP/2.0/UDP 123.45.67.89:12345"
+		 ";branch=z9hG4bK123\r\n"
+		},
+	};
+	struct sip_msg *msg = NULL;
+	struct mbuf *mb;
+	int err = 0;
+	size_t i;
+
+	mb = mbuf_alloc(1024);
+	if (!mb) {
+		err = ENOMEM;
+		goto out;
+	}
+
+	for (i=0; i<RE_ARRAY_SIZE(testv); i++) {
+
+		struct apply apply;
+
+		memset(&apply, 0, sizeof(apply));
+
+		mbuf_rewind(mb);
+		err = mbuf_printf(mb, "OPTIONS sip:213.175.63.232:56102"
+				  ";transport=TCP;dstip=212.13.202.25"
+				  ";dstport=5060 SIP/2.0\r\n%s\r\n",
+				  testv[i].msg);
+		if (err)
+			goto out;
+		mbuf_set_pos(mb, 0);
+
+		err = sip_msg_decode(&msg, mb);
+		if (err) {
+			goto out;
+		}
+
+		apply.n = 0;
+		if (sip_msg_hdr_apply(msg, true, SIP_HDR_VIA,
+				      apply_handler, &apply)) {
+			err = apply.err;
+			goto out;
+		}
+
+		if (apply.n != testv[i].n) {
+			DEBUG_WARNING("%u: apply: expected"
+				      " %u headers, got %u\n",
+				      i, testv[i].n, apply.n);
+			err = EINVAL;
+			goto out;
+		}
+		if (err) {
+			DEBUG_WARNING("%u: apply: header cmp failed (%m)\n",
+				      i, err);
+			goto out;
+		}
+
+		msg = mem_deref(msg);
+	}
+
+	err = 0;
+ out:
+	mem_deref(mb);
+	mem_deref(msg);
+	return err;
+}
+
+
+int test_sip_param(void)
+{
+	static const struct {
+		const char *str;
+		const char *exist;  /* param exist */
+		const char *nexist; /* param not exist */
+		const char *val;    /* expected value, if any */
+	} testv[] = {
+		{
+			" ; rport ",
+			"rport",
+			"port",
+			NULL,
+		},
+		{
+			" ; branch = 123 ",
+			"branch",
+			"bra",
+			"123",
+		},
+		{
+			" ; expires = 3600 ; reg-id = 1 ",
+			"expires",
+			"xpires",
+			"3600",
+		},
+		{
+			" ; expires = 3600 ; reg-id = 1 ",
+			"reg-id",
+			"regid",
+			"1",
+		},
+		{
+			" ; gruu = \"sip:alfred1@devel.sip.su.se"
+			    ";opaque=t49sgjnwu8;gruu\"; foo",
+			"gruu",
+			"ruu",
+			"sip:alfred1@devel.sip.su.se"
+			   ";opaque=t49sgjnwu8;gruu",
+		},
+	};
+
+	int err = EINVAL;
+	size_t i;
+
+	for (i=0; i<RE_ARRAY_SIZE(testv); i++) {
+		struct pl pl, foo;
+
+		pl_set_str(&pl, testv[i].str);
+
+		err = msg_param_exists(&pl, testv[i].exist, &foo);
+		if (err) {
+			DEBUG_WARNING("%u: expected param not exist (%s)\n", i,
+				      testv[i].exist);
+			goto out;
+		}
+
+		if (0 == msg_param_exists(&pl, testv[i].nexist, &foo)) {
+			DEBUG_WARNING("%u: unexpected param (%s)\n", i,
+				      testv[i].nexist);
+			err = EINVAL;
+			goto out;
+		}
+
+		if (testv[i].val) {
+			struct pl val;
+
+			err = msg_param_decode(&pl, testv[i].exist, &val);
+			if (err) {
+				DEBUG_WARNING("%u: could not get param (%r)\n",
+					      i, &testv[i].exist);
+				goto out;
+			}
+
+			err = pl_strcmp(&val, testv[i].val);
+			if (err) {
+				DEBUG_WARNING("%u: cmp: got='%r' exp='%s'\n",
+					      i, &val, testv[i].val);
+				goto out;
+			}
+		}
+	}
+
+	err = 0;
+
+ out:
+	return err;
+}
+
+
+int test_sip_parse(void)
+{
+	const char str_raw[] =
+		"INVITE sip:bob@biloxi.com SIP/2.0\r\n"
+		"Via : SIP/2.0/UDP 127.0.0.1:1234;branch=z9hG4bK.2ed0447\r\n"
+		"Max-Forwards: 70\r\n"
+		"Record-Route: <sip:p2.domain.com;lr>\r\n"
+		"t: Bob <sip:bob@biloxi.com>\r\n"
+		"f: Alice <sip:alice@atlanta.com>\r\n"
+		" ;tag=1928301774\r\n"
+		"Call-ID : a84b4c76e66710@pc33.atlanta.com\r\n"
+		"CSeq  : 314159 INVITE\r\n"
+		"Contact:  <sip:alice@pc33.atlanta.com>\r\n"
+		"Content-Type: application/sdp\r\n"
+		"Content-Length: 142\r\n"
+		"\r\n";
+	const char hdr_maxf[]   = "70";
+	const char hdr_from[]   = "sip:alice@atlanta.com";
+	const char hdr_to[]     = "sip:bob@biloxi.com";
+	const char hdr_callid[] = "a84b4c76e66710@pc33.atlanta.com";
+	struct mbuf *mb;
+	struct sip_msg *msg = NULL;
+	int err = EINVAL;
+
+	mb = mbuf_alloc(1024);
+	if (!mb) {
+		err = ENOMEM;
+		goto out;
+	}
+
+	err = mbuf_write_str(mb, str_raw);
+	if (err)
+		goto out;
+
+	mbuf_set_pos(mb, 0);
+	err = sip_msg_decode(&msg, mb);
+	if (err) {
+		goto out;
+	}
+
+	/* Max-Forwards */
+	err = pl_strcmp(&msg->maxfwd, hdr_maxf);
+	if (err)
+		goto out;
+
+	/* From */
+	err = pl_strcmp(&msg->from.auri, hdr_from);
+	if (err) {
+		DEBUG_WARNING("from header mismatch (%r)\n", &msg->from.auri);
+		goto out;
+	}
+
+	/* To */
+	err = pl_strcmp(&msg->to.auri, hdr_to);
+	if (err) {
+		DEBUG_WARNING("to header mismatch\n");
+		goto out;
+	}
+
+	/* Call-ID */
+	err = pl_strcmp(&msg->callid, hdr_callid);
+	if (err) {
+		DEBUG_WARNING("callid header mismatch\n");
+		goto out;
+	}
+
+	/* CSeq */
+	if (314159 != msg->cseq.num) {
+		DEBUG_WARNING("cseq number mismatch\n");
+		goto out;
+	}
+	err = pl_strcmp(&msg->cseq.met, "INVITE");
+	if (err) {
+		DEBUG_WARNING("cseq method mismatch\n");
+		goto out;
+	}
+
+	/* Content-Type */
+	if (!msg_ctype_cmp(&msg->ctyp, "application", "sdp")) {
+		DEBUG_WARNING("content type mismatch (%r/%r)\n",
+			      &msg->ctyp.type, &msg->ctyp.subtype);
+		err = EBADMSG;
+		goto out;
+	}
+
+	/* Content-Length */
+	if (142 != pl_u32(&msg->clen)) {
+		DEBUG_WARNING("content length mismatch\n");
+		err = EINVAL;
+		goto out;
+	}
+
+	err = 0;
+
+ out:
+	mem_deref(mb);
+	mem_deref(msg);
+	return err;
+}
+
+
+static bool count_handler(const struct sip_hdr *hdr, const struct sip_msg *msg,
+			  void *arg)
+{
+	(void)hdr;
+	(void)msg;
+	++(*(uint32_t *)arg);
+	return false;
+}
+
+
+static uint32_t xhdr_count(const struct sip_msg *msg, const char *name)
+{
+	uint32_t n = 0;
+	sip_msg_xhdr_apply(msg, true, name, count_handler, &n);
+	return n;
+}
+
+
+int test_sip_hdr(void)
+{
+	const char str[] =
+		"REGISTER sip:telio.no SIP/2.0\r\n"
+		"Via: SIP/2.0/UDP 85.119.136.184:5080"
+		" ;branch=z9hG4bKe282.0c5b6835.0;i=2b505\r\n"
+		"Via: SIP/2.0/TCP 172.17.18.219:5060;received=85.0.35.235"
+		" ;branch=z9hG4bK6ec163d6cebbbe491e1940b91.1;rport=49505\r\n"
+		"Call-ID: 2e60298e76751681@172.17.18.219\r\n"
+		"CSeq: 67139 REGISTER\r\n"
+		"Contact: <sip:21696001@85.0.35.235:49505;transport=tcp>\r\n"
+		"From: <sip:21696001@telio.no>;tag=1ea582725e044bf6\r\n"
+		"To: <sip:21696001@telio.no>\r\n"
+		"Max-Forwards: 16\r\n"
+		"Allow: INVITE,ACK,CANCEL,BYE,UPDATE,INFO,OPTIONS\r\n"
+		"User-Agent: TANDBERG/67 (F7.2 PAL)\r\n"
+		"Expires: 3600\r\n"
+		"Supported: replaces,100rel,timer\r\n"
+		"Content-Length: 0\r\n"
+		"\r\n";
+	struct mbuf *mb;
+	struct sip_msg *msg = NULL;
+	int err = EINVAL;
+
+	mb = mbuf_alloc(1024);
+	if (!mb)
+		return ENOMEM;
+
+	err = mbuf_write_str(mb, str);
+	if (err)
+		goto out;
+
+	mbuf_set_pos(mb, 0);
+	err = sip_msg_decode(&msg, mb);
+	if (err)
+		goto out;
+
+	if (xhdr_count(msg, "Call-ID") != 1) {
+		err = EBADMSG;
+		goto out;
+	}
+
+	if (xhdr_count(msg, "Supported") != 3) {
+		err = EBADMSG;
+		goto out;
+	}
+
+	if (xhdr_count(msg, "Allow") != 7) {
+		err = EBADMSG;
+		goto out;
+	}
+
+	if (xhdr_count(msg, "NonExisting") != 0) {
+		err = EBADMSG;
+		goto out;
+	}
+
+
+ out:
+	mem_deref(msg);
+	mem_deref(mb);
+
+	return err;
+}
+
+
+/** SIP Authenticated Request */
+struct sip_req {
+	struct sip_request *req;
+	struct sip_auth *auth;
+	struct sip_dialog *dlg;
+	struct sip *sip;
+};
+
+
+static int do_sip_drequestf(struct sa *laddr)
+{
+	struct sip_req *sr;
+	int err;
+	char uri[64];
+	char touri[64];
+
+	sr = mem_zalloc(sizeof(*sr), NULL);
+	if (!sr)
+		return ENOMEM;
+
+	re_snprintf(uri, sizeof(uri), "sip:%J;transport=UDP", laddr);
+	re_snprintf(touri, sizeof(touri), "sip:test@%J", laddr);
+
+	err = sip_dialog_alloc(&sr->dlg, uri,
+			       touri, NULL,
+			       touri, NULL, 0);
+	TEST_ERR(err);
+
+	err = sip_auth_alloc(&sr->auth, NULL, NULL, false);
+	TEST_ERR(err);
+
+	err = sip_alloc(&sr->sip, NULL, 32, 32, 32, "retest", NULL, NULL);
+	TEST_ERR(err);
+
+	err  = sip_transp_add(sr->sip, SIP_TRANSP_UDP, laddr);
+	TEST_ERR(err);
+
+	err = sip_drequestf(&sr->req, sr->sip, true, "REGISTER", sr->dlg, 0,
+			    sr->auth, NULL, NULL, NULL, "");
+	TEST_ERR(err);
+
+out:
+	mem_deref(sr->dlg);
+	mem_deref(sr->auth);
+	mem_deref(sr->sip);
+	mem_deref(sr);
+
+	return err;
+}
+
+
+int test_sip_drequestf(void)
+{
+	int err;
+	struct sa laddr;
+
+	err = sa_set_str(&laddr, "127.0.0.1", 0);
+	TEST_ERR(err);
+
+	err = do_sip_drequestf(&laddr);
+	TEST_ERR(err);
+
+out:
+	return err;
+}
+
+
+int test_sip_drequestf_network(void)
+{
+	struct sa laddr;
+	int err = 0;
+
+	sa_init(&laddr, AF_INET6);
+
+	if (0 == net_if_getlinklocal(NULL, AF_INET6, &laddr)) {
+
+		err = do_sip_drequestf(&laddr);
+		TEST_ERR(err);
+	}
+
+out:
+	return err;
+}
+
+
+#ifdef USE_TLS
+struct sip_transp_tls {
+	struct sip *sip;
+	struct tls *tls;
+	struct uri uri;
+	const char *ccert_cn;
+};
+
+
+int test_sip_transp_add_client_cert(void)
+{
+	struct sip_transp_tls *stt;
+	struct sa laddr;
+	int err;
+	char clientcert[256];
+	char cafile[256];
+
+	const char *user    = "abcd";
+	const char *scheme  = "sip";
+	const char *host    = "localhost";
+	const uint16_t port = 5061;
+
+	memset(clientcert, 0, sizeof(clientcert));
+	(void)re_snprintf(clientcert, sizeof(clientcert), "%s/client.pem",
+		test_datapath());
+
+	stt = mem_zalloc(sizeof(*stt), NULL);
+	if (!stt)
+		return ENOMEM;
+
+	pl_set_str(&stt->uri.user, user);
+	pl_set_str(&stt->uri.scheme, scheme);
+	pl_set_str(&stt->uri.host, host);
+	stt->uri.port = port;
+
+
+	err = sa_set_str(&laddr, "127.0.0.1", 0);
+	TEST_ERR(err);
+
+	err = tls_alloc(&stt->tls, TLS_METHOD_TLS, NULL, NULL);
+	TEST_ERR(err);
+
+	(void)re_snprintf(cafile, sizeof(cafile), "%s/server-ecdsa.pem",
+		test_datapath());
+
+	err = tls_add_ca(stt->tls, cafile);
+	TEST_ERR(err);
+
+	err = sip_alloc(&stt->sip, NULL, 32, 32, 32, "retest", NULL, NULL);
+	TEST_ERR(err);
+
+	err = sip_transp_add(stt->sip, SIP_TRANSP_TLS, &laddr, stt->tls);
+	TEST_ERR(err);
+
+	/* actual test cases */
+	err = sip_transp_add_ccert(NULL, &stt->uri, clientcert);
+	if (err == EINVAL) {
+		err = 0;
+		goto out;
+	}
+	TEST_ERR(err);
+
+	err = sip_transp_add_ccert(stt->sip, NULL, clientcert);
+	if (err == EINVAL) {
+		err = 0;
+		goto out;
+	}
+	TEST_ERR(err);
+
+	err = sip_transp_add_ccert(stt->sip, &stt->uri, NULL);
+	if (err == EINVAL) {
+		err = 0;
+		goto out;
+	}
+	TEST_ERR(err);
+
+	err = sip_transp_add_ccert(stt->sip, &stt->uri, clientcert);
+	TEST_EQUALS(0, err);
+
+ out:
+	mem_deref(stt->sip);
+	mem_deref(stt->tls);
+	mem_deref(stt);
+
+	return err;
+}
+#endif
+
+
+struct sip_dns {
+	int req1_err;
+	int req2_err;
+	int req3_err;
+	bool req1_done;
+	bool req2_done;
+	bool req3_done;
+};
+
+
+static void req1_handler(int err, const struct sip_msg *msg, void *arg)
+{
+	struct sip_dns *sipdns = arg;
+	(void)msg;
+
+	DEBUG_INFO("req1_handler: err=%m\n", err);
+	sipdns->req1_err = err;
+	sipdns->req1_done = true;
+	re_cancel();
+}
+
+
+static void req2_handler(int err, const struct sip_msg *msg, void *arg)
+{
+	struct sip_dns *sipdns = arg;
+	(void)msg;
+
+	DEBUG_INFO("req2_handler: err=%m\n", err);
+	sipdns->req2_err = err;
+	sipdns->req2_done = true;
+	if (sipdns->req3_done)
+		re_cancel();
+}
+
+
+static void req3_handler(int err, const struct sip_msg *msg, void *arg)
+{
+	struct sip_dns *sipdns = arg;
+	(void)msg;
+
+	DEBUG_INFO("req3_handler: err=%m\n", err);
+	sipdns->req3_err = err;
+	sipdns->req3_done = true;
+	if (sipdns->req2_done)
+		re_cancel();
+}
+
+
+/* Send a SIP request to example.com with mock DNS server and mock SIP server.
+ * After response has been received, send two SIP reqeusts to example.com
+ * simultanesously. Both requests must work. Tests DNS and DNS caching.
+ */
+int test_sip_dns(void)
+{
+	char from_uri[256];
+	char to_uri[256];
+	struct sip_server *sipsrv = NULL;
+	struct dns_server *dnssrv = NULL;
+	struct dnsc *dnsc = NULL;
+	struct sip *sip = NULL;
+	struct sip_auth *auth = NULL;
+	struct sip_dialog *dlg = NULL;
+	struct sip_request *req1 = NULL;
+	struct sip_request *req2 = NULL;
+	struct sip_request *req3 = NULL;
+	struct sa laddr, sipsrv_addr;
+	int err = 0;
+	struct sip_dns sipdns;
+
+	memset(&sipdns, 0, sizeof(sipdns));
+
+	/* Set up mock SIP server */
+	err = sip_server_alloc(&sipsrv);
+	TEST_ERR(err);
+
+	/* Get SIP server address */
+	err = sip_transp_laddr(sipsrv->sip, &sipsrv_addr, SIP_TRANSP_UDP,
+			       NULL);
+	TEST_ERR(err);
+
+	DEBUG_INFO("SIP server listening on %J\n", &sipsrv_addr);
+
+	/* Set up mock DNS server */
+	err = dns_server_alloc(&dnssrv, "127.0.0.1");
+	TEST_ERR(err);
+
+	/* Add A record pointing to SIP server  */
+	err = dns_server_add_a(dnssrv, "example.com",
+	                       sa_in(&sipsrv_addr), 1);
+	TEST_ERR(err);
+
+	DEBUG_INFO("DNS resolves example.com to %J\n", &sipsrv_addr);
+
+	/* Create DNS client */
+	err = dnsc_alloc(&dnsc, NULL, &dnssrv->addr, 1);
+	TEST_ERR(err);
+
+	/* Set up SIP stack with both IPv4 and IPv6 support */
+	err = sip_alloc(&sip, dnsc, 32, 32, 32, "retest", NULL, NULL);
+	TEST_ERR(err);
+
+	/* Create SIP auth object */
+	err = sip_auth_alloc(&auth, NULL, NULL, false);
+	TEST_ERR(err);
+
+	/* Add IPv4 transport */
+	err = sa_set_str(&laddr, "127.0.0.1", 0);
+	TEST_ERR(err);
+	err = sip_transp_add(sip, SIP_TRANSP_UDP, &laddr);
+	TEST_ERR(err);
+
+	/* Add IPv6 transport */
+	err = sa_set_str(&laddr, "::1", 0);
+	TEST_ERR(err);
+	err = sip_transp_add(sip, SIP_TRANSP_UDP, &laddr);
+	TEST_ERR(err);
+
+	/* Build From and To URIs */
+	re_snprintf(from_uri, sizeof(from_uri), "sip:test@127.0.0.1");
+	re_snprintf(to_uri, sizeof(to_uri), "sip:user@example.com:%u",
+	            sa_port(&sipsrv_addr));
+
+	err = sip_dialog_alloc(&dlg, to_uri, to_uri, NULL, from_uri, NULL, 0);
+	TEST_ERR(err);
+
+	err = sip_drequestf(&req1, sip, true, "OPTIONS", dlg, 0, auth, NULL,
+			    req1_handler, &sipdns,
+	                    "Content-Length: 0\r\n\r\n");
+	TEST_ERR(err);
+
+	err = re_main_timeout(500);
+	TEST_ERR(err);
+
+	ASSERT_TRUE(sipdns.req1_done);
+
+	err = sip_drequestf(&req2, sip, true, "OPTIONS", dlg, 0, auth, NULL,
+			    req2_handler, &sipdns,
+	                    "Content-Length: 0\r\n\r\n");
+	TEST_ERR(err);
+
+	/* Send third request immediately */
+	err = sip_drequestf(&req3, sip, true, "OPTIONS", dlg, 0, auth, NULL,
+	                    req3_handler, &sipdns,
+	                    "Content-Length: 0\r\n\r\n");
+	TEST_ERR(err);
+
+	err = re_main_timeout(500);
+	TEST_ERR(err);
+
+	/* Verify handlers were called */
+	ASSERT_TRUE(sipdns.req2_done);
+	ASSERT_TRUE(sipdns.req3_done);
+
+	/* Verify requests reached the transport layer */
+	ASSERT_EQ(0, sipdns.req2_err);
+	ASSERT_EQ(0, sipdns.req3_err);
+
+	/* Verify all three OPTIONS were received */
+	ASSERT_EQ(3, sipsrv->n_options_req);
+
+out:
+	mem_deref(req3);
+	mem_deref(req2);
+	mem_deref(req1);
+	mem_deref(dlg);
+	mem_deref(auth);
+	if (sip) {
+		sip_close(sip, false);
+		mem_deref(sip);
+	}
+	mem_deref(dnsc);
+	mem_deref(dnssrv);
+	mem_deref(sipsrv);
+
+	return err;
+}
+
+
+#ifdef USE_TLS
+struct wss_test {
+	struct sip *cli;
+	struct dnsc *dnsc;
+	struct tls *tls;
+	struct tmr tmr;
+	unsigned n_recv;
+};
+
+
+static bool wss_msg_handler(const struct sip_msg *msg, void *arg)
+{
+	struct wss_test *wt = arg;
+	(void)msg;
+
+	++wt->n_recv;
+	re_cancel();
+
+	return true;
+}
+
+
+static void wss_timeout_handler(void *arg)
+{
+	(void)arg;
+
+	re_cancel();
+}
+
+
+static int wss_client_alloc(struct wss_test *wt)
+{
+	struct sa laddr;
+	int err;
+
+	err = sa_set_str(&laddr, "127.0.0.1", 0);
+	if (err)
+		return err;
+
+	err = sip_alloc(&wt->cli, wt->dnsc, 32, 32, 32, "retest", NULL,
+			NULL);
+	if (err)
+		return err;
+
+	return sip_transp_add_websock(wt->cli, SIP_TRANSP_WSS, &laddr,
+				      false, NULL, wt->tls);
+}
+
+
+static int wss_send(struct wss_test *wt, const struct sa *dst, char *host)
+{
+	struct mbuf *mb;
+	int err;
+
+	mb = mbuf_alloc(512);
+	if (!mb)
+		return ENOMEM;
+
+	err = mbuf_printf(mb,
+			  "OPTIONS sip:retest.server.org SIP/2.0\r\n"
+			  "Via: SIP/2.0/WSS 127.0.0.1;branch=z9hG4bKretest\r\n"
+			  "Max-Forwards: 70\r\n"
+			  "To: <sip:retest.server.org>\r\n"
+			  "From: <sip:retest@example.com>;tag=1234\r\n"
+			  "Call-ID: 0123456789@retest\r\n"
+			  "CSeq: 1 OPTIONS\r\n"
+			  "Content-Length: 0\r\n"
+			  "\r\n");
+	if (err)
+		goto out;
+
+	mb->pos = 0;
+
+	err = sip_send_conn(wt->cli, NULL, SIP_TRANSP_WSS, dst, host, mb,
+			    NULL, NULL);
+
+ out:
+	mem_deref(mb);
+
+	return err;
+}
+
+
+/*
+ * Verify that the SIP/WSS transport validates the server identity against
+ * the target hostname, and not against the resolved address which is used
+ * to build the websock URI.
+ */
+int test_sip_transp_wss_verify_host(void)
+{
+	struct sip *srv = NULL;
+	struct sip_lsnr *lsnr = NULL;
+	struct wss_test wt;
+	struct sa laddr, dst, dns;
+	char cert[256], cafile[256];
+	char hostname[] = "retest.server.org";
+	char wrongname[] = "retest.attacker.org";
+	int err;
+
+	memset(&wt, 0, sizeof(wt));
+	tmr_init(&wt.tmr);
+
+	/* self-signed cert for 'retest.server.org' that also carries an
+	 * IP:127.0.0.1 subjectAltName, so that case 3 below (no explicit
+	 * hostname, verified against the numeric peer address) succeeds */
+	(void)re_snprintf(cert, sizeof(cert),
+			  "%s/sni/server-verifyhost.pem", test_datapath());
+	(void)re_snprintf(cafile, sizeof(cafile),
+			  "%s/sni/server-verifyhost.pem", test_datapath());
+
+	err = sa_set_str(&laddr, "127.0.0.1", 0);
+	TEST_ERR(err);
+
+	err = sa_set_str(&dns, "127.0.0.1", 53);    /* note: unused */
+	TEST_ERR(err);
+
+	err = dnsc_alloc(&wt.dnsc, NULL, &dns, 1);
+	TEST_ERR(err);
+
+	/* SIP/WSS server with a certificate for 'retest.server.org' */
+	err = sip_alloc(&srv, NULL, 32, 32, 32, "retest srv", NULL, NULL);
+	TEST_ERR(err);
+
+	err = sip_transp_add_websock(srv, SIP_TRANSP_WSS, &laddr, true,
+				     cert, NULL);
+	TEST_ERR(err);
+
+	err = sip_listen(&lsnr, srv, true, wss_msg_handler, &wt);
+	TEST_ERR(err);
+
+	err = sip_transp_laddr(srv, &dst, SIP_TRANSP_WSS, &laddr);
+	TEST_ERR(err);
+
+	err = tls_alloc(&wt.tls, TLS_METHOD_TLS, NULL, NULL);
+	TEST_ERR(err);
+
+	err = tls_add_ca(wt.tls, cafile);
+	TEST_ERR(err);
+
+	/* 1. matching hostname: the connection must be established */
+	err = wss_client_alloc(&wt);
+	TEST_ERR(err);
+
+	err = wss_send(&wt, &dst, hostname);
+	TEST_ERR(err);
+
+	err = re_main_timeout(5000);
+	TEST_ERR(err);
+	TEST_EQUALS(1, wt.n_recv);
+
+	sip_close(wt.cli, true);
+	wt.cli = mem_deref(wt.cli);
+
+	/* 2. hostname not covered by the certificate: must be rejected */
+	err = wss_client_alloc(&wt);
+	TEST_ERR(err);
+
+	err = wss_send(&wt, &dst, wrongname);
+	TEST_ERR(err);
+
+	tmr_start(&wt.tmr, 500, wss_timeout_handler, &wt);
+	err = re_main_timeout(5000);
+	TEST_ERR(err);
+	TEST_EQUALS(1, wt.n_recv);
+
+	/* 3. no hostname, on the transport (and HTTP client) used above:
+	 *    the previous hostname must not be inherited */
+	err = wss_send(&wt, &dst, NULL);
+	TEST_ERR(err);
+
+	err = re_main_timeout(5000);
+	TEST_ERR(err);
+	TEST_EQUALS(2, wt.n_recv);
+
+ out:
+	tmr_cancel(&wt.tmr);
+
+	sip_close(wt.cli, true);
+	wt.cli = mem_deref(wt.cli);
+
+	mem_deref(lsnr);
+	sip_close(srv, true);
+	mem_deref(srv);
+
+	/* let the pending websock connections close down */
+	tmr_start(&wt.tmr, 100, wss_timeout_handler, &wt);
+	(void)re_main_timeout(1000);
+	tmr_cancel(&wt.tmr);
+
+	mem_deref(wt.tls);
+	mem_deref(wt.dnsc);
+
+	return err;
+}
+#endif

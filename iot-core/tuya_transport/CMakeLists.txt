@@ -41,12 +41,12 @@ unset(_tp_official)
 # as pure official definitions that do not reference in-house directories.
 #
 # mbedtls is injected only when core builds it itself
-# (CONFIG_ENABLE_PLATFORM_MBEDTLS=OFF): when the platform provides mbedtls
-# (esp-idf host), that target name is a host-side component/bridge target, and
-# injecting core's config directory would make the host's mbedtls consumers
-# (esp_common etc.) pick up core's threading_alt.h (which includes
-# core_mutex.h) and fail to compile; the host's own mbedtls configuration
-# system (esp_config.h + ROM version of threading_alt.h) is injected by the host.
+# (CONFIG_ENABLE_PLATFORM_MBEDTLS=OFF). When the platform provides mbedtls,
+# that target name is a host-side component/bridge target, and injecting
+# core's config directory would make the host's mbedtls consumers pick up
+# core's threading_alt.h (which includes core_mutex.h) and fail to compile;
+# the host's own mbedtls configuration system (esp_config.h + ROM version of
+# threading_alt.h) is injected by the host.
 foreach(_tp_official corehttp coremqtt)
     if(TARGET ${_tp_official})
         target_include_directories(${_tp_official} PRIVATE

@@ -285,7 +285,7 @@ int http_file_download(http_download_config_t *config)
              * again (DATE_GET is the only successor of RANGE_REQUEST, so no
              * state is skipped).
              * The previous line is the English keyword comment recognized by
-             * GCC; without it the esp32 build emits a warning. */
+             * GCC; without it GCC emits a warning. */
 
         case DL_STATE_DATE_GET: {
             /* On the first round, consume the body fragment pre-received into

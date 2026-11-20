@@ -108,6 +108,38 @@ static MUTEX_HANDLE      s_cam_lock = NULL;
 static BOOL_T            s_queue_need_iframe = FALSE;
 static BOOL_T            s_cam_running = FALSE;
 
+/* Low-frequency frame-path deltas: distinguishes "producer stopped",
+ * "queue dropped the chain" and "ring rejected the frame" in one log line.
+ * Counters are atomic because the producer, consumer and stats caller run on
+ * different threads. */
+static uint32_t          s_dbg_frames = 0;
+static uint32_t          s_dbg_gets = 0;
+static uint32_t          s_dbg_misses = 0;
+static uint32_t          s_dbg_qdrops = 0;
+static uint32_t          s_dbg_ring_skips = 0;
+static uint32_t          s_dbg_ring_fails = 0;
+static uint32_t          s_dbg_stats_ms = 0;
+
+static void __demo_live_stats_tick(void)
+{
+    uint32_t now  = (uint32_t)tuya_p2p_misc_get_current_time_ms();
+    uint32_t prev = __atomic_load_n(&s_dbg_stats_ms, __ATOMIC_RELAXED);
+
+    if (!__atomic_load_n(&s_live_push_enable, __ATOMIC_ACQUIRE) || (uint32_t)(now - prev) < 2000U) {
+        return;
+    }
+    if (!__atomic_compare_exchange_n(&s_dbg_stats_ms, &prev, now, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        return;
+    }
+    PR_NOTICE("live frames/2s: frames=%u get=%u miss=%u qdrop=%u ring_skip=%u ring_fail=%u",
+              __atomic_exchange_n(&s_dbg_frames, 0, __ATOMIC_RELAXED),
+              __atomic_exchange_n(&s_dbg_gets, 0, __ATOMIC_RELAXED),
+              __atomic_exchange_n(&s_dbg_misses, 0, __ATOMIC_RELAXED),
+              __atomic_exchange_n(&s_dbg_qdrops, 0, __ATOMIC_RELAXED),
+              __atomic_exchange_n(&s_dbg_ring_skips, 0, __ATOMIC_RELAXED),
+              __atomic_exchange_n(&s_dbg_ring_fails, 0, __ATOMIC_RELAXED));
+}
+
 #if DEMO_HAS_RING_BUFFER
 static RING_BUFFER_USER_HANDLE_T s_ring_w = NULL;
 static RING_BUFFER_USER_HANDLE_T s_ring_r = NULL;
@@ -137,9 +169,14 @@ static OPERATE_RET __demo_p2p_queue_push(const uint8_t *data, uint32_t len, BOOL
         return OPRT_INVALID_PARM;
     }
     if (s_q_count >= DEMO_P2P_QUEUE_DEPTH) {
-        s_q_head = (s_q_head + 1U) % DEMO_P2P_QUEUE_DEPTH;
-        s_q_count--;
+        /* A dependency chain is broken: drop the whole queue, not just the
+         * oldest frame, otherwise stale P frames can still be sent after the
+         * frame they reference was lost. */
+        s_q_head = 0;
+        s_q_tail = 0;
+        s_q_count = 0;
         s_queue_need_iframe = TRUE;
+        s_dbg_qdrops++;
     }
     if (s_queue_need_iframe && !is_key) {
         return OPRT_OK;
@@ -250,9 +287,6 @@ static void __demo_encoded_frame_cb(const DEMO_VCAM_FRAME_T *frame)
     if (s_frame_mutex == NULL || s_frame_slot_cap == 0) {
         return;
     }
-    if (!s_live_push_enable) {
-        return;
-    }
     if (frame->len > s_frame_slot_cap) {
         PR_WARN("encoded frame too large: %u > %u", (uint32_t)frame->len, (uint32_t)s_frame_slot_cap);
         return;
@@ -267,20 +301,31 @@ static void __demo_encoded_frame_cb(const DEMO_VCAM_FRAME_T *frame)
 
     is_key = frame->is_i_frame ? TRUE : FALSE;
     ts_ms = tuya_p2p_misc_get_current_time_ms();
+    __atomic_fetch_add(&s_dbg_frames, 1, __ATOMIC_RELAXED);
 
-    if (s_live_push_enable) {
-        core_mutex_lock(s_frame_mutex);
-        (void)__demo_p2p_queue_push(frame->data, frame->len, is_key, ts_ms);
+    /* Check the push gate inside the same lock that start/stop use, so a
+     * frame produced during a session switch is either fully accepted or
+     * fully dropped. Use exactly one sink: pushing to the 2-slot queue while
+     * the reader consumes the ring would overflow every frame and burn a
+     * 256 KiB memcpy for nothing. */
+    core_mutex_lock(s_frame_mutex);
+    if (!__atomic_load_n(&s_live_push_enable, __ATOMIC_ACQUIRE)) {
         core_mutex_unlock(s_frame_mutex);
+        return;
     }
-
 #if DEMO_HAS_RING_BUFFER
-    if (s_live_push_enable && s_ring_ready && s_ring_w != NULL) {
-        (void)tuya_ipc_ring_buffer_append_data_with_timestamp(s_ring_w, (uint8_t *)frame->data, frame->len,
-                                                             is_key ? E_VIDEO_I_FRAME : E_VIDEO_PB_FRAME,
-                                                             ts_ms * 1000ULL, ts_ms);
-    }
+    if (s_ring_ready && s_ring_w != NULL) {
+        if (tuya_ipc_ring_buffer_append_data_with_timestamp(s_ring_w, (uint8_t *)frame->data, frame->len,
+                                                            is_key ? E_VIDEO_I_FRAME : E_VIDEO_PB_FRAME,
+                                                            ts_ms * 1000ULL, ts_ms) != OPRT_OK) {
+            __atomic_fetch_add(&s_dbg_ring_fails, 1, __ATOMIC_RELAXED);
+        }
+    } else
 #endif
+    {
+        (void)__demo_p2p_queue_push(frame->data, frame->len, is_key, ts_ms);
+    }
+    core_mutex_unlock(s_frame_mutex);
 
 #if DEMO_LIVE_RECORD
     (void)local_store_rec_write((const uint8_t *)frame->data, frame->len, ts_ms, is_key);
@@ -362,6 +407,39 @@ static BOOL_T __demo_camera_present(void)
 }
 
 /**
+ * @brief Register the pre-encoded rate ladder before the vcam thread starts
+ *
+ * The vcam validates SPS/PPS compatibility at open and rejects variants that
+ * differ from the base. Registering here (media start) keeps the table
+ * immutable while the rate-control thread runs.
+ */
+static void __demo_register_variants(void)
+{
+    static const uint32_t rates[] = {500, 450, 350, 250, 200, 150, 100};
+    const char           *path     = __demo_h264_path();
+    const char           *slash    = NULL;
+    size_t                dirlen   = 0;
+    char                  vpath[DEMO_VCAM_PATH_LEN];
+    uint32_t              i;
+
+    if (path == NULL) {
+        return;
+    }
+    (void)demo_vcam_add_variant(DEMO_CAM_KBPS, path);
+    slash  = strrchr(path, '/');
+    dirlen = (slash != NULL) ? (size_t)(slash - path + 1) : 0;
+    for (i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+        int n = snprintf(vpath, sizeof(vpath), "%.*sdemo_video_%u.264", (int)dirlen, path, rates[i]);
+
+        if (n > 0 && (size_t)n < sizeof(vpath) && access(vpath, R_OK) == 0) {
+            (void)demo_vcam_add_variant(rates[i], vpath);
+        } else {
+            PR_DEBUG("vcam variant missing: %s", vpath);
+        }
+    }
+}
+
+/**
  * @brief Open the virtual camera (demo_vcam_open); log an error and return on failure
  */
 static OPERATE_RET __demo_camera_open(void)
@@ -379,7 +457,7 @@ static OPERATE_RET __demo_camera_open(void)
         return OPRT_NOT_EXIST;
     }
 
-    rt = demo_vcam_open(path, DEMO_CAM_FPS, __demo_encoded_frame_cb);
+    rt = demo_vcam_open(path, DEMO_CAM_FPS, DEMO_CAM_KBPS, __demo_encoded_frame_cb);
     if (rt != OPRT_OK) {
         PR_ERR("demo_vcam_open('%s') failed: %d", path, rt);
         return rt;
@@ -423,8 +501,7 @@ static OPERATE_RET __demo_camera_request_i_frame(void)
  */
 static OPERATE_RET __demo_camera_set_bitrate(uint32_t kbps)
 {
-    (void)kbps;
-    return OPRT_NOT_SUPPORTED;
+    return demo_vcam_set_bitrate(kbps);
 }
 
 /**
@@ -439,7 +516,7 @@ static void __demo_camera_sync(void)
     }
 
     core_mutex_lock(s_cam_lock);
-    wanted = s_live_want_cam;
+    wanted = __atomic_load_n(&s_live_want_cam, __ATOMIC_ACQUIRE);
 
     if (wanted && !s_cam_running) {
         if (__demo_camera_open() != OPRT_OK) {
@@ -485,7 +562,7 @@ static void __demo_init_p2p_av_info(BOOL_T from_camera)
 
     rt = tuya_ipc_init_trans_av_info(&av_info);
     if (rt != OPRT_OK) {
-        /* Reached when there is no p2p session (e.g. the media chain selftest); this is expected and does not block media start */
+        /* Reached when there is no p2p session; this is expected and does not block media start */
         PR_ERR("tuya_ipc_init_trans_av_info failed: %d", rt);
     }
 }
@@ -515,8 +592,8 @@ void tuya_ipc_demo_start(void)
         return;
     }
 
-    s_live_push_enable = FALSE;
-    s_live_want_cam = FALSE;
+    __atomic_store_n(&s_live_push_enable, FALSE, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_live_want_cam, FALSE, __ATOMIC_RELEASE);
     __demo_p2p_queue_clear();
 
     for (i = 0; i < DEMO_P2P_QUEUE_DEPTH; i++) {
@@ -563,6 +640,7 @@ void tuya_ipc_demo_start(void)
     demo_media_event_register();
 
     src = __demo_h264_path();
+    __demo_register_variants();
     PR_NOTICE("tuya_ipc_demo: ready (source=%s, sensor %ux%u@%u, av fps %u, live_rec=%d)",
               (src != NULL) ? src : "none", (uint32_t)DEMO_CAM_WIDTH, (uint32_t)DEMO_CAM_HEIGHT,
               (uint32_t)DEMO_CAM_FPS, (uint32_t)DEMO_AV_FPS, (int)DEMO_LIVE_RECORD);
@@ -575,8 +653,8 @@ void tuya_ipc_demo_end(void)
 {
     uint32_t i;
 
-    s_live_push_enable = FALSE;
-    s_live_want_cam = FALSE;
+    __atomic_store_n(&s_live_push_enable, FALSE, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_live_want_cam, FALSE, __ATOMIC_RELEASE);
     if (s_cam_lock != NULL) {
         core_mutex_lock(s_cam_lock);
         __demo_camera_close();
@@ -617,11 +695,39 @@ int demo_on_live_video_start_callback(void)
         return -1;
     }
 
-    s_live_want_cam = TRUE;
+    __atomic_store_n(&s_live_want_cam, TRUE, __ATOMIC_RELEASE);
+    /* Reset the frame path for the new session *before* the camera can
+     * produce a frame, then open the push gate before camera_sync: the first
+     * IDR must not be dropped (T5AI cannot request one later). */
+    if (s_frame_mutex != NULL) {
+        core_mutex_lock(s_frame_mutex);
+        __atomic_store_n(&s_live_push_enable, FALSE, __ATOMIC_RELEASE);
+        __demo_p2p_queue_clear();
+#if DEMO_HAS_RING_BUFFER
+        if (s_ring_ready && s_ring_r != NULL) {
+            /* Only the live reader: recording has its own reader state. */
+            tuya_ipc_ring_buffer_clean_user_state(s_ring_r);
+        }
+#endif
+        __atomic_store_n(&s_live_push_enable, TRUE, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_dbg_stats_ms, (uint32_t)tuya_p2p_misc_get_current_time_ms(), __ATOMIC_RELAXED);
+        __atomic_store_n(&s_dbg_frames, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&s_dbg_gets, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&s_dbg_misses, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&s_dbg_qdrops, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&s_dbg_ring_skips, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&s_dbg_ring_fails, 0, __ATOMIC_RELAXED);
+        core_mutex_unlock(s_frame_mutex);
+    }
     __demo_camera_sync();
     if (!s_cam_running) {
         PR_ERR("LIVE start: vcam open failed");
-        s_live_want_cam = FALSE;
+        __atomic_store_n(&s_live_want_cam, FALSE, __ATOMIC_RELEASE);
+        if (s_frame_mutex != NULL) {
+            core_mutex_lock(s_frame_mutex);
+            __atomic_store_n(&s_live_push_enable, FALSE, __ATOMIC_RELEASE);
+            core_mutex_unlock(s_frame_mutex);
+        }
         return -1;
     }
 
@@ -631,13 +737,6 @@ int demo_on_live_video_start_callback(void)
     }
 #endif
 
-    if (s_frame_mutex != NULL) {
-        core_mutex_lock(s_frame_mutex);
-        __demo_p2p_queue_clear();
-        core_mutex_unlock(s_frame_mutex);
-    }
-
-    s_live_push_enable = TRUE;
     PR_NOTICE("LIVE video start: push enabled");
     return 0;
 }
@@ -647,10 +746,10 @@ int demo_on_live_video_start_callback(void)
  */
 int demo_on_live_video_stop_callback(void)
 {
-    s_live_want_cam = FALSE;
-    s_live_push_enable = FALSE;
+    __atomic_store_n(&s_live_want_cam, FALSE, __ATOMIC_RELEASE);
     if (s_frame_mutex != NULL) {
         core_mutex_lock(s_frame_mutex);
+        __atomic_store_n(&s_live_push_enable, FALSE, __ATOMIC_RELEASE);
         __demo_p2p_queue_clear();
         core_mutex_unlock(s_frame_mutex);
     }
@@ -688,18 +787,35 @@ int demo_on_get_video_frame_callback(MEDIA_FRAME *media_frame)
         return -1;
     }
 
+    __demo_live_stats_tick();
+
 #if DEMO_HAS_RING_BUFFER
     if (s_ring_ready && s_ring_r != NULL) {
-        RING_BUFFER_NODE_T *node = tuya_ipc_ring_buffer_get_frame(s_ring_r, FALSE);
+        RING_BUFFER_NODE_T node;
 
-        if (node != NULL && node->raw_data != NULL && node->size > 0 && node->size <= DEMO_P2P_FRAME_CAP) {
-            memcpy(media_frame->data, node->raw_data, node->size);
-            media_frame->size = node->size;
-            media_frame->type = (node->type == E_VIDEO_I_FRAME) ? eVideoIFrame : eVideoPBFrame;
-            media_frame->pts = node->timestamp;
-            media_frame->timestamp = (uint32_t)node->timestamp;
+        rt = tuya_ipc_ring_buffer_read_frame(s_ring_r, media_frame->data, DEMO_P2P_FRAME_CAP, &node);
+        if (rt == OPRT_OK && node.size > 0) {
+            media_frame->size = node.size;
+            media_frame->type = (node.type == E_VIDEO_I_FRAME) ? eVideoIFrame : eVideoPBFrame;
+            media_frame->pts = node.timestamp;
+            media_frame->timestamp = (uint32_t)node.timestamp;
+            __atomic_fetch_add(&s_dbg_gets, 1, __ATOMIC_RELAXED);
             return 0;
         }
+        if (rt == OPRT_INVALID_PARM) {
+            /* read_frame does not advance the reader on an oversized frame;
+             * skip it or every call selects it again. */
+            static uint64_t s_last_skip_log_ms = 0;
+            uint64_t now_ms = tuya_p2p_misc_get_current_time_ms();
+
+            __atomic_fetch_add(&s_dbg_ring_skips, 1, __ATOMIC_RELAXED);
+            if (now_ms - s_last_skip_log_ms >= 5000ULL) {
+                s_last_skip_log_ms = now_ms;
+                PR_ERR("ring frame exceeds reader buffer, skipping");
+            }
+            tuya_ipc_ring_buffer_clean_user_state(s_ring_r);
+        }
+        __atomic_fetch_add(&s_dbg_misses, 1, __ATOMIC_RELAXED);
         core_system_sleep(10);
         return -1;
     }
@@ -709,9 +825,11 @@ int demo_on_get_video_frame_callback(MEDIA_FRAME *media_frame)
     rt = __demo_p2p_queue_pop(media_frame);
     core_mutex_unlock(s_frame_mutex);
     if (rt != OPRT_OK) {
+        __atomic_fetch_add(&s_dbg_misses, 1, __ATOMIC_RELAXED);
         core_system_sleep(10);
         return -1;
     }
+    __atomic_fetch_add(&s_dbg_gets, 1, __ATOMIC_RELAXED);
     return 0;
 }
 

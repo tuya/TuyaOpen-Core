@@ -140,4 +140,7 @@ static OPERATE_RET __netif_set_link_cb(CORE_NETIF_LINK_CHANGE_CB cb)
 CORE_NETIF_OPS_T core_netif_ops_platform = {
     .get_ip = __netif_get_ip,
     .set_link_cb = __netif_set_link_cb,
+    /* No interface-list API exposed by this port: enumeration is not
+     * supported, callers fall back to core_netif_get_ip(). */
+    .foreach_addr = NULL,
 };

@@ -38,7 +38,6 @@ cd build && env -u DISPLAY ./agent_demo
 > X11 端口），主线程阻塞在 ALSA open → **云连接永远不会开始，绑定二维码也
 > 永远不会打印**。去掉 `DISPLAY`（ALSA 不需要 X）即可恢复：
 > `env -u DISPLAY ./agent_demo`。
-> 自测目标（agent_chain/nlg/http_selftest）不打开音频设备，不受影响；
 > iot_demo / p2p_demo 没有音频输出，同样不受影响。
 
 凭据可选：默认使用 `include/tuya_config.h` 中的 PID/UUID/AuthKey，可以通过
@@ -119,34 +118,6 @@ AI agent 上（并设置 `enable_mcp`，在会话建立时向云端上报
 只注册了 `device_info_get`，因此云端 `tools/list` 与实际能力一致，不会暴露
 调用必然失败的占位工具。
 
-## 自测
-
-三个独立可执行文件，不需要云端、App 或凭据（在 build 目录运行——CMake 会把
-`voice_16k.pcm` 样本复制过去；在别处运行会提示 `run from build/`）：
-
-```bash
-cd build && ./agent_chain_selftest
-cd build && ./agent_nlg_selftest
-cd build && ./agent_http_selftest
-```
-
-> 验证纪律：以 `cmake --build build`（**全部目标**）为准——只跑单个自测不算
-> 完整验证：自测能链接，agent_demo 主目标仍可能链接失败。
-
-- `agent_chain_selftest`：上行音频源契约与样本帧切分——总字节 82944，按
-  80ms 帧（2560B）切成 33 帧（32 个整帧 + 最后一个 1024B 帧）、EOF 语义、
-  关闭/重开、坏路径拒绝、**I/O 错误与 EOF 的区分**（对目录路径 fopen 会成功，
-  但 read 必须返回 <0 而不是 0/EOF）。样本路径与应用一致
-  （`CONFIG_AGENT_DEMO_AUDIO_FILE` 非空时测试该文件）。期望输出
-  `AGENT CHAIN SELFTEST PASSED`（退出码 0）。
-- `agent_nlg_selftest`：下行消费契约——多段 NLG 流中由
-  `AI_USER_EVT_TEXT_STREAM_STOP` 携带的最后一段（eof=1）即使非空也必须被
-  打印，而空包不得打印任何内容。事件通过公开 API 构造（不依赖云端分包）。
-  期望输出 `AGENT NLG SELFTEST PASSED`（退出码 0）。
-- `agent_http_selftest`：http_manager URL 解析边界——越界端口（回绕样本）和
-  显式 `:0` 必须被解析器拒绝；范围内端口不得被拒绝；空 host 回归（不需要
-  网络）。期望输出 `AGENT HTTP SELFTEST PASSED`（退出码 0）。
-
 ## 语音样本
 
 自带样本 `assets/voice_16k.pcm`（构建时复制到 `build/voice_16k.pcm`）：
@@ -211,8 +182,7 @@ push 采集语义——这些决策属于本示例没有实现的会话状态机
 - **下行音频被丢弃**：`ENABLE_COMP_AI_AUDIO` 关闭时，云端仍会下发 TTS 音频
   流（消耗流量但不处理）。
 - **NLG 末段打印边界**：多段 NLG 流中由 STOP 携带的最后一段（eof=1）会被
-  打印；该消费契约由 `agent_nlg_selftest` 覆盖，但云端运行时是否真的发送
-  非空末段取决于其分包。契约级成功 != 端到端验证。
+  打印；云端运行时是否真的发送非空末段取决于其分包。
 - **URL 解析器边界（媒体下载相关）**：不支持 IPv6 字面量（`[::1]`）和带
   userinfo 的 URL（`user:pass@host`）——两者都会通过显式的 `:0` 非法检查
   安全失败（host 段在第一个 `:` 处截断，port 段命中非数字）；要支持它们需要
@@ -252,10 +222,6 @@ push 采集语义——这些决策属于本示例没有实现的会话状态机
     |       -- ai_agent/            # 应用封装（输出回调注册、文本/文件/图片上行）
     |       -- ai_skills/           # 下行文本解析（ASR/NLG/skill）
     |       -- ai_mcp/              # MCP 工具集
-    +- selftest                      # 离线自测（独立目标，不依赖云端；见“自测”）
-    |   -- agent_chain_selftest.c   # 链路自测（目标 agent_chain_selftest）
-    |   -- agent_nlg_selftest.c     # 下行消费自测（目标 agent_nlg_selftest）
-    |   -- agent_http_selftest.c    # URL 解析边界自测（目标 agent_http_selftest）
     -- CMakeLists.txt
     -- Kconfig                      # AGENT_DEMO* 开关 + 组件开关（audio_player/ai_audio）
 ```

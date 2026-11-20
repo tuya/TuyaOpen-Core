@@ -14,6 +14,9 @@
 # and are unaffected.
 idf_component_register(SRCS "" INCLUDE_DIRS "" REQUIRES mbedtls lwip)
 
+# P2P/libre: ESP-IDF is an MCU build; the platform macros are decided in
+# p2p-core/third_party/port/re/include/re_platform_config.h.
+
 include(${CMAKE_CURRENT_LIST_DIR}/tuyaopen-core.cmake)
 
 target_link_libraries(${COMPONENT_LIB} INTERFACE tuyaopen-core)

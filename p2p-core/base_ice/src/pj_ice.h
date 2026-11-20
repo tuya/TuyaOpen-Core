@@ -2,10 +2,16 @@
 #define PJ_ICE_H_
 #include <stdint.h>
 #include <stdbool.h>
+#ifdef CONFIG_P2P_ICE_LIBRE
+/* libre backend: pjproject is not built; only the pj-compatible surface used
+ * by the adapter and the RTC service is provided. */
+#include "pj_compat.h"
+#else
 #include <pjlib.h>
 #include <pjlib-util.h>
 #include <pjnath.h>
 #include <pjnath/ice_strans.h>
+#endif
 
 typedef struct pj_ice_cb {
     void (*ice_on_rx_data)(pj_ice_strans *ice_st, unsigned comp_id, void *buffer, pj_size_t size,
@@ -21,6 +27,9 @@ typedef struct pj_ice_session_cfg {
     char *local_passwd;
     char server_tokens[2048];
     void *user_data;
+    /* libre backend: gather and use relay (TURN) candidates only. The
+     * pjproject backend ignores this field. */
+    bool relay_only;
 } pj_ice_session_cfg_t;
 
 typedef struct pj_ice_session pj_ice_session_t;

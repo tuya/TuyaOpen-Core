@@ -68,6 +68,22 @@ typedef void (*THREAD_FUNC_T)(void *);
 #include <time.h>
 #include <errno.h>
 #include <stdio.h>
+#include <signal.h>
+
+/* The broker (or a LAN peer) can reset/close a TCP stream at any time; a
+ * write to that socket would otherwise raise SIGPIPE and terminate the whole
+ * process (observed as rc=141 during the MQTT RST adverse test). Ignoring it
+ * makes send() return EPIPE, which the MQTT/TLS error path already handles.
+ * POSIX host only: MCU ports have no SIGPIPE.
+ *
+ * This is a process-wide disposition: this port's constructor installs
+ * SIG_IGN before main(); an application that needs its own SIGPIPE handler
+ * can install it in main() and override this default. Verified at runtime
+ * via /proc/<pid>/status SigIgn bit 12. */
+__attribute__((constructor)) static void __port_ignore_sigpipe(void)
+{
+    (void)signal(SIGPIPE, SIG_IGN);
+}
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>

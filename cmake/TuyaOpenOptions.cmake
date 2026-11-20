@@ -5,6 +5,8 @@ option(CONFIG_ENABLE_BLUETOOTH "Build core_bluetooth and BLE cloud sources" OFF)
 option(CONFIG_ENABLE_PLATFORM_MBEDTLS "Use platform mbedTLS instead of the bundled copy" OFF)
 option(CONFIG_ENABLE_DEVICE_TIMER "Include tuya_device_timer.c in tuya_cloud_service" OFF)
 option(CONFIG_ENABLE_TUYA_P2P "Build tuya_p2p subtree" OFF)
+# The P2P ICE/STUN/TURN stack is the vendored libre (baresip/re) subset; there
+# is no backend selection: enabling CONFIG_ENABLE_TUYA_P2P is enough.
 # The LAN (local link) service (lan/tuya_lan.c) is always built, as upstream:
 # it has no build switch.
 option(CONFIG_ENABLE_LOCAL_STORE "Build tuya_p2p/local_store" OFF)
@@ -29,6 +31,7 @@ option(CONFIG_ENABLE_AI_PLAYER_DECODER_OPUS "Enable the OPUS decoder of audio_pl
 option(CONFIG_ENABLE_AI_PLAYER_DECODER_OGGOPUS "Enable the OGGOPUS decoder of audio_player (phase 2, not ported)" OFF)
 option(CONFIG_ENABLE_QRCODE "Build the qrcode module (QR output for app binding)" OFF)
 option(CONFIG_LITTLE_END "PJ little-endian (ON) vs big-endian (OFF)" ON)
+option(CONFIG_P2P_STACK_WATERMARK_LOG "Log each P2P thread's stack high-water mark" OFF)
 
 if(NOT DEFINED TUYAOPEN_PORT_DIR)
     set(TUYAOPEN_PORT_DIR "")
@@ -51,6 +54,7 @@ foreach(_tuyaopen_opt
     CONFIG_ENABLE_AI_PLAYER_DECODER_OGGOPUS
     CONFIG_ENABLE_QRCODE
     CONFIG_LITTLE_END
+    CONFIG_P2P_STACK_WATERMARK_LOG
 )
     if(DEFINED ${_tuyaopen_opt})
         string(TOLOWER "${${_tuyaopen_opt}}" _tuyaopen_val)

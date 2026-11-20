@@ -127,6 +127,57 @@ THREAD_STATE_E core_thread_get_state(const THREAD_HANDLE handle);
  */
 OPERATE_RET core_thread_get_id(THREAD_HANDLE *thread);
 
+/**
+ * @brief Thread-local storage: number of keys available process-wide
+ */
+#define CORE_THREAD_TLS_KEYS 16
+
+/** Thread-local storage key */
+typedef uint32_t THREAD_TLS_KEY;
+
+/**
+ * @brief Destructor run with the per-thread value when the thread exits
+ */
+typedef void (*THREAD_TLS_DTOR_CB)(void *value);
+
+/**
+ * @brief Allocate a thread-local storage key
+ *
+ * @param[out] key  allocated key
+ * @param[in]  dtor destructor run at thread exit, may be NULL
+ *
+ * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+ */
+OPERATE_RET core_thread_tls_key_create(THREAD_TLS_KEY *key, THREAD_TLS_DTOR_CB dtor);
+
+/**
+ * @brief Release a thread-local storage key
+ *
+ * @param[in] key key allocated by core_thread_tls_key_create
+ *
+ * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+ */
+OPERATE_RET core_thread_tls_key_delete(THREAD_TLS_KEY key);
+
+/**
+ * @brief Set the calling thread's value for a key
+ *
+ * @param[in] key   key
+ * @param[in] value value, may be NULL
+ *
+ * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+ */
+OPERATE_RET core_thread_tls_set(THREAD_TLS_KEY key, void *value);
+
+/**
+ * @brief Get the calling thread's value for a key
+ *
+ * @param[in] key key
+ *
+ * @return the value, or NULL when unset
+ */
+void *core_thread_tls_get(THREAD_TLS_KEY key);
+
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */

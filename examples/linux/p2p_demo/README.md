@@ -57,12 +57,27 @@ Runtime behavior:
 | `P2P_DEMO_WIDTH` | Video width (pixels) reported to the App; must match the video source | 2304 |
 | `P2P_DEMO_HEIGHT` | Video height (pixels) reported to the App; must match the video source | 1296 |
 | `P2P_DEMO_FPS` | Virtual camera frame feed rate, also reported to the App | 15 |
-| `P2P_DEMO_KBPS` | Target bitrate reported to the App (the source does not take part in rate control) | 960 |
+| `P2P_DEMO_KBPS` | Base video bitrate; the demo follows p2p rate control with pre-encoded 500/450/350/250 kbps variants | 960 |
 | `P2P_DEMO_GOP` | GOP length reported to the App (the bundled video has a GOP of 60) | 60 |
 | `P2P_DEMO_H264_FILE` | Live video source path; empty uses the bundled video | "" |
 | `P2P_DEMO_LIVE_RECORD` | Continuously write local_store during live streaming (split into segments) | n |
 | `P2P_DEMO_RECORD_MAX_SEC` | Maximum duration of one recording segment (seconds, 30-3600) | 120 |
 | `P2P_DEMO_PB_SEED` | Seed today's index with the live source file at startup to try playback without recording | n |
+
+Generate the rate ladder with `tools/gen_demo_variants.sh` (defaults: 960x540,
+550 kbps base plus 500/450/350/250 kbps) and configure the matching dimensions:
+
+```bash
+cmake -B build -DCONFIG_P2P_DEMO_WIDTH=960 -DCONFIG_P2P_DEMO_HEIGHT=540 \
+      -DCONFIG_P2P_DEMO_KBPS=550
+examples/linux/p2p_demo/tools/gen_demo_variants.sh \
+      examples/linux/p2p_demo/assets/demo_video.264 build 960 540
+```
+
+The script overwrites `build/demo_video.264` as the 550 kbps base. Every variant
+must have byte-identical SPS/PPS to the base; otherwise the vcam disables it at
+open (this prevents a mid-stream resolution/profile change). Re-running CMake
+configure copies the original asset again, so run the script afterwards.
 
 menuconfig usage (`P2P_DEMO` has no prompt; simply do not build this example
 instead of disabling it):
@@ -85,27 +100,6 @@ cmake -B build -DCONFIG_P2P_DEMO_H264_FILE=/path/to/your.h264
 Note that this demo's own `.config` (in its directory) is read by its CMake;
 once it exists it takes precedence. Delete it to return to the built-in
 defaults.
-
-## Selftests
-
-Two standalone executables that need neither the cloud nor the App (run from the
-example directory):
-
-```bash
-./build/vcam_selftest
-./build/media_chain_selftest
-```
-
-- `vcam_selftest`: opens the video source and verifies the AU index and frame
-  feed timing; expects `VCAM SELFTEST PASSED` (80 frames, timestamps stepping by
-  66ms, 2 I frames).
-- `media_chain_selftest`: exercises the full media chain (vcam -> frame
-  validation/queue/ring buffer -> P2P frame-fetch callback) and verifies
-  "request I frame"; expects `MEDIA CHAIN SELFTEST PASSED` (60 frames in 4
-  seconds, monotonically increasing timestamps, at most 8 frames between the
-  request and the next I frame -- normally 1~2 frames, while an ignored request
-  waits ~59 P frames). When the video source is missing it reports
-  `sample not found: run from build/ ...`.
 
 ## Video Source
 
@@ -210,9 +204,6 @@ cmake --build build-ls -j$(nproc)
     |   |   -- fs_card.c            # File system card (core_fs_ops; used by local_store)
     |   -- tuya_config.h            # PID/UUID/AuthKey (overridable by secrets or -D)
     |   -- tuya_config_secrets.h.example  # Credential override template
-    +- selftest                      # Offline selftests (standalone targets, no cloud; see "Selftests")
-    |   -- demo_vcam_selftest.c     # vcam selftest (target vcam_selftest)
-    |   -- media_chain_selftest.c   # Media chain selftest (target media_chain_selftest)
     -- CMakeLists.txt
     -- Kconfig                      # P2P_DEMO* options
 ```

@@ -127,8 +127,6 @@ file(GLOB _p2p_demo_adapt_srcs CONFIGURE_DEPENDS
 )
 list(APPEND _p2p_demo_srcs ${_p2p_demo_adapt_srcs})
 unset(_p2p_demo_adapt_srcs)
-# Selftests (selftest/ directory, standalone targets with their own main()) are not
-# matched by this GLOB, so no filtering is needed
 
 add_executable(p2p_demo ${_p2p_demo_srcs})
 
@@ -147,8 +145,8 @@ if(TUYA_OPENSDK_AUTHKEY)
     target_compile_definitions(p2p_demo PRIVATE TUYA_OPENSDK_AUTHKEY="${TUYA_OPENSDK_AUTHKEY}")
 endif()
 
-# Demo parameters and switch injection (shared by the app and the media chain
-# selftest; the core tuyaopen-headers only handles ENABLE_* switch macros)
+# Demo parameters and switch injection (the core tuyaopen-headers only handles
+# ENABLE_* switch macros)
 set(_p2p_demo_media_defs
     P2P_DEMO_WIDTH=${CONFIG_P2P_DEMO_WIDTH}
     P2P_DEMO_HEIGHT=${CONFIG_P2P_DEMO_HEIGHT}
@@ -201,43 +199,6 @@ set(_p2p_demo_link
 )
 list(APPEND _p2p_demo_link -Wl,--end-group tuyaopen-port tuyaopen-headers)
 target_link_libraries(p2p_demo PRIVATE ${_p2p_demo_link})
-
-# demo_vcam selftest (standalone executable, links the same library group as p2p_demo)
-# demo_vcam.c is the implementation under test (the app target picks it up via GLOB);
-# include it explicitly here
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/selftest/demo_vcam_selftest.c")
-add_executable(vcam_selftest
-    selftest/demo_vcam_selftest.c
-    src/demo_vcam.c
-)
-target_include_directories(vcam_selftest PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-
-# Same as media_chain_selftest: let -DCONFIG_P2P_DEMO_H264_FILE and similar overrides
-# apply to the vcam selftest as well, otherwise after switching the video source the
-# selftest would silently test the bundled video
-target_compile_definitions(vcam_selftest PRIVATE ${_p2p_demo_media_defs})
-target_link_libraries(vcam_selftest PRIVATE ${_p2p_demo_link})
-endif()
-
-# Media chain selftest (standalone executable, links the same library group as p2p_demo):
-# runs vcam -> frame validation/queue/ring buffer -> frame-fetch callback without cloud
-# or App. Does not include tuya_main.c/reset_netcfg.c (the selftest does not connect to
-# the cloud); the media implementation files are listed explicitly
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/selftest/media_chain_selftest.c")
-add_executable(media_chain_selftest
-    selftest/media_chain_selftest.c
-    src/tuya_ipc_demo.c
-    src/demo_vcam.c
-    src/demo_media_event.c
-)
-target_include_directories(media_chain_selftest PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-target_compile_definitions(media_chain_selftest PRIVATE ${_p2p_demo_media_defs})
-target_link_libraries(media_chain_selftest PRIVATE ${_p2p_demo_link})
-endif()
 unset(_p2p_demo_link)
 unset(_p2p_demo_media_defs)
 
@@ -250,16 +211,4 @@ endif()
 if(ENABLE_ASAN)
     target_compile_options(p2p_demo PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
     target_link_options(p2p_demo PRIVATE -fsanitize=address)
-    # Also enabled for the selftests: the vcam buffer/index allocations are part of
-    # the memory surface, so running them under ASAN is worthwhile
-    if(TARGET vcam_selftest)
-        target_compile_options(vcam_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
-        target_link_options(vcam_selftest PRIVATE -fsanitize=address)
-    endif()
-    # Same for the media chain selftest (frame pool/ring buffer copies are part of
-    # the memory surface)
-    if(TARGET media_chain_selftest)
-        target_compile_options(media_chain_selftest PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
-        target_link_options(media_chain_selftest PRIVATE -fsanitize=address)
-    endif()
 endif()

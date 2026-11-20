@@ -104,8 +104,6 @@ static void __core_thread_join(THREAD_HANDLE tid, SEM_HANDLE *join_sem)
 #include "tuya_sdp.h"
 #include "pj_ice.h"
 #include "pj_sync_condition.h"
-#include <pjmedia/sdp.h>
-#include <pj/errno.h>
 #include "core_log.h"
 
 #define IKCP_PACKET_HEADER_SIZE       24
@@ -117,15 +115,32 @@ static void __core_thread_join(THREAD_HANDLE tid, SEM_HANDLE *join_sem)
 #define SRTP_MASTER_SALT_LENGTH       14
 #define SRTP_MASTER_LENGTH            (SRTP_MASTER_KEY_LENGTH + SRTP_MASTER_SALT_LENGTH)
 #define ENCRYPT_MD5_LEN               16
-/* Signaling worker: pop buffer 8KB; ICE offer runs on this thread → large stack */
-#define CTX_SIG_WORKER_STACK_SIZE     (48 * 1024)
+/* Signaling worker: pop buffer 8KB; ICE offer runs on this thread.
+ * Configurable via Kconfig (P2P_CTX_SIG_STACK_SIZE / P2P_RTC_WORKER_STACK_SIZE);
+ * the fallbacks match the measured stack watermarks. */
+#ifndef P2P_CTX_SIG_STACK_SIZE
+#define P2P_CTX_SIG_STACK_SIZE (10 * 1024)
+#endif
+#ifndef P2P_RTC_WORKER_STACK_SIZE
+#define P2P_RTC_WORKER_STACK_SIZE (10 * 1024)
+#endif
 #define CTX_SIG_WORKER_MSG_BUF_SIZE   8192
 #define CTX_SIG_MSG_TYPE_INCOMING     0
 #define CTX_SIG_MSG_TYPE_ICE_TIMEOUT  1
+/* A local ICE candidate formatted by rtc_wrk (payload: session_id \n cand).
+ * The MQTT publish blocks for seconds on some links; doing it on rtc_wrk
+ * would stop the ICE pump, so the worker only queues it for the signalling
+ * worker. */
+#define CTX_SIG_MSG_TYPE_LOCAL_CAND   2
+#define CTX_SIG_MSG_TYPE_RESEND_ANSWER 3
 /* used_size is payload bytes; warn when backlog is large (not message count) */
 #define CTX_SIG_Q_BYTES_WARN          (8 * 1024)
 /* Back off before retrying a failed dequeue, so a persistent fault cannot spin */
 #define CTX_SIG_POP_RETRY_MS          20
+/* Retransmit period for trickle candidates while ICE is still pending. MQTT
+ * can drop right after the answer/first candidate publish; a retransmit lets
+ * the App start connectivity checks without waiting for its own retry. */
+#define P2P_SIG_RESEND_INTERVAL_MS   1000
 
 // CMD is transmitted using kcp's channel number field, and kcp uses little endian
 #define RTC_CHANNEL_CMD   (0x010000F3)
@@ -308,8 +323,6 @@ typedef struct tuya_p2p_rtc_session {
 
     rtc_sdp_t local_sdp;
     rtc_sdp_t remote_sdp;
-    pjmedia_sdp_session *pLocalSdp;
-    pjmedia_sdp_session *pRemoteSdp;
     MUTEX_HANDLE channel_lock;
     rtc_channel_t *channels;
     // tuya_uv_timer_t *te;
@@ -325,6 +338,7 @@ typedef struct tuya_p2p_rtc_session {
     unsigned char iv[16];
     mbedtls_md_info_t *md_info;
     mbedtls_md_context_t md_ctx;
+    bool crypt_ready;
 
     struct {
         char recv_buf[4096];
@@ -334,12 +348,48 @@ typedef struct tuya_p2p_rtc_session {
     pj_ice_session_t *pIce;
     THREAD_HANDLE tid;
     SEM_HANDLE tid_join;
+    /* Written by the signalling worker (and the ICE-timeout path), polled by
+     * rtc_wrk and by senders waiting for queue space. Access it only through
+     * rtc_quit_requested()/rtc_set_quit(): volatile is not a synchronization
+     * primitive and the flag has two writers. */
     bool bQuitKCPThread;
     /* Dedup MQTT/LAN duplicate offer: answer already sent for this session */
     int answer_sent;
+    /* MQTT connection epoch at the moment the answer was published. The RTC
+     * worker compares it with the current epoch and resends the answer after
+     * a reconnect; a drop+reconnect between two samples is still seen. */
+    uint32_t answer_conn_epoch;
+    /* When this session was created and a hash of the offer SDP. A retried
+     * offer (same SDP, ICE still gathering) must not restart the session:
+     * the App retries every ~1 s and a restart would reset ICE progress. */
+    uint64_t create_ms;
+    uint32_t offer_hash;
+    /* Monotonic per session; queued control messages carry it so a message
+     * from a replaced session cannot act on the new one. */
+    uint32_t generation;
 } tuya_p2p_rtc_session_t;
 
+static inline bool rtc_quit_requested(tuya_p2p_rtc_session_t *rtc)
+{
+    return __atomic_load_n(&rtc->bQuitKCPThread, __ATOMIC_ACQUIRE);
+}
+
+static inline void rtc_set_quit(tuya_p2p_rtc_session_t *rtc, bool quit)
+{
+    __atomic_store_n(&rtc->bQuitKCPThread, quit, __ATOMIC_RELEASE);
+}
+
 tuya_p2p_rtc_options_t g_options;
+/* Current MQTT connection epoch, or 0 when the application does not expose
+ * one. g_options is filled once before any worker starts, so the NULL check
+ * needs no synchronization. */
+static uint32_t __p2p_mqtt_conn_epoch(void)
+{
+    if (g_options.get_mqtt_conn_epoch == NULL) {
+        return 0;
+    }
+    return g_options.get_mqtt_conn_epoch();
+}
 static uint32_t g_uP2PSkill = TUYA_P2P_SDK_SKILL_BASIC /*TUYA_P2P_SDK_SKILL_NUMBER*/;
 tuya_p2p_rtc_session_t *g_pRtcSession = NULL;
 MUTEX_HANDLE            g_p2p_session_mutex = NULL;
@@ -348,6 +398,8 @@ static tuya_p2p_rtc_session_t *s_exiting_rtc = NULL;
 rtc_session_cfg_t cfg;
 pj_ice_session_cfg_t iceSessionCfg;
 /* Incoming signaling queue + worker thread */
+/* Session generation source; only the signalling worker creates sessions. */
+static uint32_t s_session_generation;
 static bc_msg_queue_t *s_msg_queue_incoming = NULL;
 static THREAD_HANDLE s_sig_worker_tid;
 static SEM_HANDLE s_sig_worker_join;
@@ -376,6 +428,19 @@ static void *ctx_signaling_worker_thread(void *arg);
 static int ctx_init_msg_queue_and_worker(void);
 static void ctx_deinit_msg_queue_and_worker(void);
 static void ctx_deinit_msg_queue_and_worker(void);
+
+/* FNV-1a: identify an SDP offer across App retries without storing the whole
+ * string. Only equality matters here. */
+static uint32_t __p2p_offer_hash(const char *s)
+{
+    uint32_t h = 2166136261u;
+
+    while (s != NULL && *s != '\0') {
+        h ^= (uint8_t)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
 /**
  * @brief Destroy current RTC session and drop session mutex (sig-worker only)
  * @return none
@@ -384,10 +449,8 @@ static void __rtc_destroy_current_session(const char *reason)
 {
     PR_NOTICE("p2p session destroy reason=%s", reason ? reason : "?");
     ctx_session_destroy(g_pRtcSession);
-    if (g_p2p_session_mutex != NULL) {
-        core_mutex_release(g_p2p_session_mutex);
-        g_p2p_session_mutex = NULL;
-    }
+    /* g_p2p_session_mutex is process-lifetime (created in init) and is not
+     * released here: API callers may be between their NULL check and lock. */
 }
 /**
  * @brief Whether current session ICE is ready to keep on duplicate offer
@@ -422,10 +485,12 @@ static void ctx_session_dispatch_signaling(tuya_p2p_rtc_session_t *rtc, rtc_sess
 {
     char *to_send = signaling;
     char *with_path = NULL;
+    uint64_t t0;
 
     if ((rtc == NULL) || (cfg == NULL) || (signaling == NULL)) {
         return;
     }
+    t0 = tuya_p2p_misc_get_timestamp_ms();
     if ((cfg->lan_mode != 0) && (rtc->cb.on_lan_signaling != NULL)) {
         with_path = ctx_signaling_add_path(signaling, "lan");
         if (with_path != NULL) {
@@ -436,6 +501,11 @@ static void ctx_session_dispatch_signaling(tuya_p2p_rtc_session_t *rtc, rtc_sess
     } else if (rtc->cb.on_signaling != NULL) {
         rtc->cb.on_signaling(cfg->remote_id, signaling, (uint32_t)strlen(signaling));
         PR_DEBUG("mqtt signaling send ok");
+    }
+    /* Publish runs on both the signalling worker and rtc_wrk (trickle
+     * candidates); a transport that blocks here also stops the ICE pump. */
+    if (tuya_p2p_misc_get_timestamp_ms() - t0 >= 500ULL) {
+        PR_WARN("signaling send took %ums", (unsigned)(tuya_p2p_misc_get_timestamp_ms() - t0));
     }
     if (with_path != NULL) {
         cJSON_free(with_path);
@@ -462,12 +532,28 @@ int rtc_ref_cnt_get(tuya_p2p_rtc_session_t *rtc);
 
 int32_t tuya_p2p_rtc_init(tuya_p2p_rtc_options_t *opt)
 {
+    bool created_mutex = false;
+
     sync_cond_init(&g_syncCond);
     memcpy(&g_options, opt, sizeof(tuya_p2p_rtc_options_t));
     g_options.preconnect_enable = false; // Disable the use of pre-connection
+    /* Process-lifetime API lock. It must outlive every session: send/recv
+     * callers check it before locking, so destroying it per session would
+     * leave a check-then-lock window that a teardown can invalidate. */
+    if (g_p2p_session_mutex == NULL) {
+        if (core_mutex_create_init(&g_p2p_session_mutex) != OPRT_OK) {
+            PR_ERR("p2p session mutex create failed");
+            return TUYA_P2P_ERROR_OUT_OF_MEMORY;
+        }
+        created_mutex = true;
+    }
     /* Incoming signaling queue + worker (LAN/MQTT only enqueue) */
     if (ctx_init_msg_queue_and_worker() != 0) {
         PR_ERR("tuya_ctx_init_msg_queue / worker failed");
+        if (created_mutex) {
+            core_mutex_release(g_p2p_session_mutex);
+            g_p2p_session_mutex = NULL;
+        }
         return TUYA_P2P_ERROR_FAIL_TO_CREATE_THREAD;
     }
     return 0;
@@ -475,12 +561,24 @@ int32_t tuya_p2p_rtc_init(tuya_p2p_rtc_options_t *opt)
 
 int32_t tuya_p2p_rtc_close(int32_t handle, int32_t reason)
 {
-    if (g_pRtcSession == NULL) {
+    tuya_p2p_rtc_session_t *rtc = NULL;
+
+    if (g_p2p_session_mutex == NULL) {
+        return TUYA_P2P_ERROR_NOT_INITIALIZED;
+    }
+    core_mutex_lock(g_p2p_session_mutex);
+    rtc = g_pRtcSession;
+    if (rtc != NULL) {
+        rtc_ref_cnt_add(rtc);
+    }
+    core_mutex_unlock(g_p2p_session_mutex);
+    if (rtc == NULL) {
         return TUYA_P2P_ERROR_NOT_INITIALIZED;
     }
     tuya_p2p_log_info("rtc session %08x close\n", handle);
-    ctx_session_send_disconnect(g_pRtcSession, reason, RTC_SESSION_CLOSE_REASON_LOCAL_CLOSE);
+    ctx_session_send_disconnect(rtc, reason, RTC_SESSION_CLOSE_REASON_LOCAL_CLOSE);
     tuya_p2p_log_info("rtc session %08x close over\n", handle);
+    rtc_ref_cnt_del(rtc);
     return 0;
 }
 
@@ -567,7 +665,20 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
             PR_NOTICE("p2p new offer replaces session");
             __rtc_destroy_current_session("offer_new_session_id");
         } else if (!__rtc_ice_media_ready(g_pRtcSession)) {
-            __rtc_destroy_current_session("offer_same_session_ice_stuck");
+            uint32_t new_hash = cJSON_IsString(el_sdp) ? __p2p_offer_hash(el_sdp->valuestring) : 0;
+            uint64_t age = core_system_get_millisecond() - g_pRtcSession->create_ms;
+
+            /* The App retries the same offer while it waits for our answer.
+             * Restarting on every retry resets ICE before it can complete; keep
+             * the session and re-send the answer (handled below). The window is
+             * generous: a slow MQTT publish can delay our answer for seconds
+             * and the App retries meanwhile. Only replace a session that is
+             * truly stuck or a genuinely new offer. */
+            if (new_hash == g_pRtcSession->offer_hash && age < 30000 && !rtc_quit_requested(g_pRtcSession)) {
+                PR_NOTICE("duplicate offer: keep session (age=%ums)", (unsigned)age);
+            } else {
+                __rtc_destroy_current_session("offer_same_session_ice_stuck");
+            }
         }
     }
     if (g_pRtcSession == NULL && strcmp(type, "offer") == 0) {
@@ -581,6 +692,9 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
 
         if (!cJSON_IsArray(el_token) && !cJSON_IsObject(el_udp_token) && !cJSON_IsObject(el_tcp_token)) {
             PR_ERR("invalid signaling: no token field");
+            if (root != NULL) {
+                cJSON_Delete(root);
+            }
             return -1;
         } else {
             if (cJSON_IsArray(el_token)) {
@@ -669,7 +783,6 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
         }
 
         int32_t err_code = 0;
-        core_mutex_create_init(&g_p2p_session_mutex);
         g_pRtcSession = ctx_session_create(&cfg, RTC_STATE_P2P_CONNECT, &err_code);
         if (g_pRtcSession == NULL) {
             PR_ERR("ctx_session_create failed err=%d", err_code);
@@ -678,6 +791,7 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
             }
             return -1;
         }
+        g_pRtcSession->offer_hash = cJSON_IsString(el_sdp) ? __p2p_offer_hash(el_sdp->valuestring) : 0;
         memcpy(&g_pRtcSession->cb, &g_options.cb, sizeof(g_options.cb));
 
         iceSessionCfg.cb.ice_on_rx_data = ice_on_rx_data;
@@ -709,7 +823,7 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
 
         {
             if (__core_thread_spawn(&g_pRtcSession->tid, &g_pRtcSession->tid_join, rtc_worker_thread, g_pRtcSession,
-                                   24 * 1024, "rtc_wrk") != 0) {
+                                   P2P_RTC_WORKER_STACK_SIZE, "rtc_wrk") != 0) {
                 PR_ERR("rtc_worker create failed");
             }
         }
@@ -747,9 +861,15 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
         }
         if (rtc_cand != NULL) {
             if (strcmp(rtc_cand->cfg.session_id, session_id) != 0) {
+                /* The App can send trickle candidates for the session it just
+                 * replaced; dropping them silently leaves the new ICE session
+                 * with zero remote candidates and a 30 s timeout. */
+                PR_WARN("candidate session mismatch: active=%s cand=%s", rtc_cand->cfg.session_id, session_id);
             } else {
                 ctx_session_add_remote_candidate(rtc_cand, &rtc_cand->remote_sdp, el_candidate->valuestring);
             }
+        } else {
+            PR_WARN("candidate without a session: cand=%s", session_id);
         }
     } else if (strcmp(type, "offer") == 0) {
         tuya_p2p_rtc_session_t *rtc_offer = NULL;
@@ -785,8 +905,9 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
         if (skip_dup_offer) {
         } else if (rtc_offer != NULL) {
             /* Send answer without session mutex (may race with ICE trickle send) */
-            ctx_session_send_sdp(rtc_offer, &cfg);
-            rtc_offer->answer_sent = 1;
+            ctx_session_send_sdp(rtc_offer, &rtc_offer->cfg);
+            __atomic_store_n(&rtc_offer->answer_conn_epoch, __p2p_mqtt_conn_epoch(), __ATOMIC_RELEASE);
+            __atomic_store_n(&rtc_offer->answer_sent, 1, __ATOMIC_RELEASE);
         }
     } else if ((strcmp(type, "answer") == 0)) {
         if (!cJSON_IsString(el_sdp)) {
@@ -798,8 +919,10 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
         }
         char *buf = el_sdp->valuestring;
         core_mutex_lock(g_p2p_session_mutex);
-        tuya_p2p_rtc_sdp_decode(&g_pRtcSession->remote_sdp, buf);
-        tuya_p2p_rtc_sdp_negotiate(&g_pRtcSession->local_sdp, &g_pRtcSession->remote_sdp, type);
+        if (g_pRtcSession != NULL) {
+            tuya_p2p_rtc_sdp_decode(&g_pRtcSession->remote_sdp, buf);
+            tuya_p2p_rtc_sdp_negotiate(&g_pRtcSession->local_sdp, &g_pRtcSession->remote_sdp, type);
+        }
         core_mutex_unlock(g_p2p_session_mutex);
     } else if (strcmp(type, "disconnect") == 0) {
         cJSON *jclose_reason_local = cJSON_GetObjectItemCaseSensitive(el_msg, "close_reason_local");
@@ -893,9 +1016,18 @@ static int tuya_p2p_process_signal_msg(char *msg, int msglen)
         // tuya_p2p_log_info("remote %s pre session number %d\n", rtc->cfg.remote_id, pre_session_number_remote);
         core_mutex_lock(g_p2p_session_mutex);
         tuya_p2p_rtc_session_t *rtc = g_pRtcSession;
-        rtc->active_handle = active_handle;
-        ctx_session_send_suspend_resp(rtc, TUYA_P2P_ERROR_SUCCESSFUL);
+        if (rtc != NULL) {
+            rtc->active_handle = active_handle;
+            /* Hold a reference: the reply publishes outside the mutex and the
+             * session could otherwise be destroyed before it is sent. */
+            rtc_ref_cnt_add(rtc);
+        }
         core_mutex_unlock(g_p2p_session_mutex);
+        /* MQTT publish must not run while holding the session mutex. */
+        if (rtc != NULL) {
+            ctx_session_send_suspend_resp(rtc, TUYA_P2P_ERROR_SUCCESSFUL);
+            rtc_ref_cnt_del(rtc);
+        }
     }
     if (root != NULL) {
         cJSON_Delete(root);
@@ -920,7 +1052,7 @@ static int ctx_init_msg_queue_and_worker(void)
     }
     s_sig_worker_quit = 0;
     ret = __core_thread_spawn(&s_sig_worker_tid, &s_sig_worker_join, ctx_signaling_worker_thread, NULL,
-                             CTX_SIG_WORKER_STACK_SIZE, "ctx_sig");
+                             P2P_CTX_SIG_STACK_SIZE, "ctx_sig");
     if (ret != 0) {
         bc_msg_queue_destroy(s_msg_queue_incoming);
         s_msg_queue_incoming = NULL;
@@ -962,6 +1094,7 @@ static void *ctx_signaling_worker_thread(void *arg)
     int type;
     int len;
     int n;
+    uint64_t last_wm_ms = 0;
 
     (void)arg;
     buf = (char *)malloc(CTX_SIG_WORKER_MSG_BUF_SIZE);
@@ -998,12 +1131,66 @@ static void *ctx_signaling_worker_thread(void *arg)
             if (spent >= 200ULL) {
                 PR_WARN("p2p signaling msg took %ums, backlog was %d bytes", (unsigned)spent, qbytes);
             }
+        } else if (type == CTX_SIG_MSG_TYPE_LOCAL_CAND) {
+            uint32_t gen = 0;
+
+            if (len > (int)sizeof(gen)) {
+                memcpy(&gen, buf, sizeof(gen));
+                /* Drop a candidate from a session the App already replaced;
+                 * sending it under the current session would be wrong. */
+                if (g_pRtcSession != NULL && gen == g_pRtcSession->generation) {
+                    (void)ctx_session_send_candidate(g_pRtcSession, &g_pRtcSession->cfg,
+                                                     buf + sizeof(gen));
+                }
+            }
+        } else if (type == CTX_SIG_MSG_TYPE_RESEND_ANSWER) {
+            uint32_t gen = 0;
+
+            if (len >= (int)sizeof(gen)) {
+                memcpy(&gen, buf, sizeof(gen));
+                if (g_pRtcSession != NULL && gen == g_pRtcSession->generation &&
+                    g_pRtcSession->answer_sent && !__rtc_ice_media_ready(g_pRtcSession) &&
+                    !rtc_quit_requested(g_pRtcSession)) {
+                    PR_NOTICE("p2p resend answer after MQTT reconnect (gen=%u)", gen);
+                    (void)ctx_session_send_sdp(g_pRtcSession, &g_pRtcSession->cfg);
+                    __atomic_store_n(&g_pRtcSession->answer_conn_epoch, __p2p_mqtt_conn_epoch(), __ATOMIC_RELEASE);
+                }
+            }
         } else if (type == CTX_SIG_MSG_TYPE_ICE_TIMEOUT) {
-            if (g_pRtcSession != NULL && !__rtc_ice_media_ready(g_pRtcSession)) {
+            /* The timeout was queued by this session's own rtc_wrk, but it can
+             * be dequeued after the App replaced the session (the destroy join
+             * blocks this worker for as long as the ICE pump takes to return).
+             * Only tear down the session it belongs to. */
+            uint32_t gen = 0;
+
+            if (len >= (int)sizeof(gen)) {
+                memcpy(&gen, buf, sizeof(gen));
+            }
+            if (g_pRtcSession != NULL && len >= (int)sizeof(gen) && gen == g_pRtcSession->generation &&
+                !__rtc_ice_media_ready(g_pRtcSession)) {
                 __rtc_destroy_current_session("ice_nego_timeout");
+            } else if (g_pRtcSession != NULL) {
+                PR_DEBUG("stale ice timeout ignored (gen=%u active=%u)", gen, g_pRtcSession->generation);
+            }
+        }
+
+        {
+            uint64_t wm_now = tuya_p2p_misc_get_timestamp_ms();
+            if (wm_now - last_wm_ms >= P2P_STACK_WATERMARK_INTERVAL_MS) {
+                last_wm_ms = wm_now;
+                tuya_p2p_log_thread_stack("ctx_sig", P2P_CTX_SIG_STACK_SIZE);
             }
         }
     }
+
+    /* The libre/re context is owned by this signaling worker (the ICE session
+     * is created here). Destroy the session on this thread before it exits;
+     * otherwise the thread TSS destructor can close the re context while the
+     * caller is still destroying icem/turnc/udp objects on another thread. */
+    if (g_pRtcSession != NULL) {
+        ctx_session_destroy(g_pRtcSession);
+    }
+
     free(buf);
     return NULL;
 }
@@ -1047,6 +1234,7 @@ int ctx_session_add_remote_candidate(tuya_p2p_rtc_session_t *rtc, rtc_sdp_t *rem
     if (pIceSession != NULL && pj_ice_session_is_nego_done(pIceSession)) {
         return 0;
     }
+    PR_DEBUG("remote candidate: %s", candidate);
     pj_str_t pjstrCand = pj_str(candidate);
     if (iCandidateLen >= 2 && *(candidate + iCandidateLen - 2) == '\r' &&
         *(candidate + iCandidateLen - 1) == '\n') {
@@ -1425,6 +1613,89 @@ void ice_on_ice_complete(pj_ice_strans *ice_st, pj_ice_strans_op op, pj_status_t
     return;
 }
 
+/**
+ * @brief Hand a formatted local candidate to the signalling worker
+ * @param[in] rtc session the candidate belongs to
+ * @param[in] cand candidate line ("a=candidate:...")
+ * @return none
+ *
+ * The MQTT publish of a candidate can block for seconds when the link is
+ * congested (observed as multi-second waits on constrained ports). rtc_wrk
+ * must keep pumping ICE, so it only enqueues here;
+ * ctx_signaling_worker_thread sends it.
+ * A full queue drops the candidate, which is fine: it is retransmitted.
+ */
+static void __p2p_queue_local_candidate(tuya_p2p_rtc_session_t *rtc, const char *cand)
+{
+    uint8_t payload[sizeof(uint32_t) + 256];
+    size_t clen;
+
+    if (rtc == NULL || cand == NULL || s_msg_queue_incoming == NULL) {
+        return;
+    }
+    clen = strlen(cand);
+    if (clen + 1 > sizeof(payload) - sizeof(uint32_t)) {
+        return;
+    }
+    memcpy(payload, &rtc->generation, sizeof(rtc->generation));
+    memcpy(payload + sizeof(uint32_t), cand, clen + 1);
+    (void)bc_msg_queue_push_back(s_msg_queue_incoming, CTX_SIG_MSG_TYPE_LOCAL_CAND, payload,
+                                 (int)(sizeof(uint32_t) + clen + 1));
+}
+
+/**
+ * @brief Send the current local ICE candidates to the peer
+ * @param[in] rtc session
+ * @param[in] ice_st ICE transport whose candidate cache is enumerated
+ * @return number of candidates queued
+ *
+ * Used by rtc_wrk to retransmit the trickle candidates while ICE is still
+ * pending: a signaling publish can be lost when MQTT drops right after the
+ * answer, and the App then never starts connectivity checks. Duplicates are
+ * harmless once negotiation completes (the App ignores known candidates).
+ */
+static int __rtc_send_local_candidates(tuya_p2p_rtc_session_t *rtc, pj_ice_strans *ice_st)
+{
+    pj_ice_sess_cand *cands = NULL;
+    char *szCand = NULL;
+    unsigned count = PJ_ICE_MAX_CAND;
+    unsigned i;
+    int sent = 0;
+
+    if (rtc == NULL || ice_st == NULL) {
+        return 0;
+    }
+
+    /* Heap buffers: stack overflow was observed on 8KB rtc_worker */
+    cands = (pj_ice_sess_cand *)malloc(sizeof(pj_ice_sess_cand) * PJ_ICE_MAX_CAND);
+    szCand = (char *)malloc(1024);
+    if (cands == NULL || szCand == NULL) {
+        free(cands);
+        free(szCand);
+        return 0;
+    }
+    if (pj_ice_strans_enum_cands(ice_st, 1, &count, cands) != PJ_SUCCESS) {
+        free(cands);
+        free(szCand);
+        return 0;
+    }
+    for (i = 0; i < count; ++i) {
+        /* Skip IPv6 on IPv4-only builds / when family unsupported */
+        if (cands[i].addr.addr.sa_family != pj_AF_INET()) {
+            continue;
+        }
+        memset(szCand, 0, 1024);
+        if (print_cand(szCand, 1024, &cands[i]) < 0) {
+            continue;
+        }
+        __p2p_queue_local_candidate(rtc, szCand);
+        sent++;
+    }
+    free(cands);
+    free(szCand);
+    return sent;
+}
+
 void ice_on_new_candidate(pj_ice_strans *ice_st, const pj_ice_sess_cand *cand, pj_bool_t last)
 {
     tuya_p2p_rtc_session_t *pRtcSession = (tuya_p2p_rtc_session_t *)pj_ice_strans_get_user_data(ice_st);
@@ -1451,7 +1722,7 @@ void ice_on_new_candidate(pj_ice_strans *ice_st, const pj_ice_sess_cand *cand, p
         if (print_cand(szCand, sizeof(szCand), cand) < 0) {
             return;
         }
-        ctx_session_send_candidate(pRtcSession, &cfg, szCand);
+        __p2p_queue_local_candidate(pRtcSession, szCand);
     }
 
     if (last) {
@@ -1494,7 +1765,7 @@ void ice_on_new_candidate(pj_ice_strans *ice_st, const pj_ice_sess_cand *cand, p
             if (print_cand(szCand, 1024, &cands[i]) < 0) {
                 continue;
             }
-            ctx_session_send_candidate(pRtcSession, &cfg, szCand);
+            __p2p_queue_local_candidate(pRtcSession, szCand);
         }
         if (relay_n == 0) {
             PR_WARN("p2p no relay candidate, connectivity relies on host/srflx only");
@@ -1526,6 +1797,12 @@ void ice_on_rx_data(pj_ice_strans *ice_st, unsigned comp_id, void *buffer, pj_si
 void rtc_process_kcp_data(tuya_p2p_rtc_session_t *rtc, const tuya_uv_buf_t *pkt)
 {
     if (rtc == NULL || pkt == NULL) {
+        return;
+    }
+    /* L3 packets carry an HMAC; drop until MD/AES is initialized on the ICE
+     * success callback instead of using a zeroed mbedtls_md context. */
+    if (rtc->cfg.security_level == TUYA_P2P_SECURITY_LEVEL_3 && !rtc->crypt_ready) {
+        tuya_p2p_log_debug("drop KCP packet before crypt init\n");
         return;
     }
     uint32_t digest_len = 0;
@@ -1582,6 +1859,12 @@ static int on_kcp_output(const char *buf, int len, ikcpcb *kcp, void *user_data)
     rtc_channel_t *chan = (rtc_channel_t *)user_data;
     tuya_p2p_rtc_session_t *rtc = chan->rtc;
 
+    if (rtc == NULL) {
+        return 0;
+    }
+    if (rtc->cfg.security_level == TUYA_P2P_SECURITY_LEVEL_3 && !rtc->crypt_ready) {
+        return 0;
+    }
     int md_size = 0;
     if (rtc->cfg.security_level == TUYA_P2P_SECURITY_LEVEL_3) {
         int ret;
@@ -1645,6 +1928,11 @@ tuya_p2p_rtc_session_t *ctx_session_create(rtc_session_cfg_t *cfg, rtc_state_e s
         goto finish;
     }
     memset(rtc, 0, sizeof(tuya_p2p_rtc_session_t));
+    rtc->create_ms = core_system_get_millisecond();
+    if (++s_session_generation == 0) {
+        ++s_session_generation; /* 0 is never a valid generation */
+    }
+    rtc->generation = s_session_generation;
     memcpy(&rtc->cfg, cfg, sizeof(rtc->cfg));
     // rtc->pool = NULL;
     rtc->ref_cnt = 0;
@@ -1654,7 +1942,7 @@ tuya_p2p_rtc_session_t *ctx_session_create(rtc_session_cfg_t *cfg, rtc_state_e s
     rtc->active_handle = 0;
     rtc->local_cmd_seq = 0;
     rtc->tid = NULL;
-    rtc->bQuitKCPThread = false;
+    rtc_set_quit(rtc, false); /* not published yet, but keep all access atomic */
 
     sync_cond_init(&rtc->syncCondExit);
 
@@ -1706,7 +1994,7 @@ void ctx_session_destroy(tuya_p2p_rtc_session_t *rtc)
         g_pRtcSession = NULL;
     }
     s_exiting_rtc = rtc;
-    rtc->bQuitKCPThread = true;
+    rtc_set_quit(rtc, true);
     if (g_p2p_session_mutex != NULL) {
         core_mutex_unlock(g_p2p_session_mutex);
     }
@@ -1716,6 +2004,11 @@ void ctx_session_destroy(tuya_p2p_rtc_session_t *rtc)
         t0 = tuya_p2p_misc_get_timestamp_ms();
         __core_thread_join(rtc->tid, &rtc->tid_join);
         rtc->tid = NULL;
+        /* This runs on the signalling worker: a slow exit here delays every
+         * queued offer/candidate behind it, so surface it. */
+        if (tuya_p2p_misc_get_timestamp_ms() - t0 >= 500ULL) {
+            PR_WARN("rtc worker join took %ums", (unsigned)(tuya_p2p_misc_get_timestamp_ms() - t0));
+        }
     }
 
     t0 = tuya_p2p_misc_get_timestamp_ms();
@@ -1741,15 +2034,48 @@ void ctx_session_destroy(tuya_p2p_rtc_session_t *rtc)
         sync_cond_notify(&rtc->syncCondExit);
     }
     sync_cond_wait(&rtc->syncCondExit);
-    sync_cond_clean(&rtc->syncCondExit);
 
-    /* Drain any late recv/send refs before free */
+    /* Stop new notify_exit/close refs: both take g_p2p_session_mutex before
+     * looking up the session, so clearing s_exiting_rtc under that lock is
+     * the handoff point. A notifier that already took a ref is drained
+     * below, before the condition variable is cleaned and the session freed. */
+    if (g_p2p_session_mutex != NULL) {
+        core_mutex_lock(g_p2p_session_mutex);
+        if (s_exiting_rtc == rtc) {
+            s_exiting_rtc = NULL;
+        }
+        core_mutex_unlock(g_p2p_session_mutex);
+    } else if (s_exiting_rtc == rtc) {
+        s_exiting_rtc = NULL;
+    }
+
+    /* Drain any late recv/send/notify refs before free */
     for (wait_i = 0; wait_i < 100 && rtc_ref_cnt_get(rtc) > 1; wait_i++) {
         if ((wait_i % 20) == 0) {
             PR_WARN("p2p destroy draining refs %dms ref=%d", wait_i * 10, rtc_ref_cnt_get(rtc));
         }
         core_system_sleep((10 * 1000 + 999) / 1000);
     }
+    if (rtc_ref_cnt_get(rtc) > 1) {
+        /* All holders are interruptible by bQuit; reaching this means one is
+         * starved or stuck in an uninterruptible call. Never free under a
+         * live ref: leak the session and its locks instead of risking UAF.
+         * The ref holders do not touch pIce, so stop its timers/sockets now;
+         * otherwise the shared re context would keep pumping the old path
+         * while the next session runs. Skip this if the signalling worker is
+         * already gone (deinit fallback), since it owned the re context. */
+        PR_ERR("p2p destroy leaks session with %d refs outstanding", rtc_ref_cnt_get(rtc));
+        if (rtc->pIce != NULL) {
+            if (s_sig_worker_started != 0) {
+                pj_ice_session_destroy(rtc->pIce);
+                rtc->pIce = NULL;
+            } else {
+                PR_ERR("p2p destroy leaks pIce: signalling worker already stopped");
+            }
+        }
+        return;
+    }
+    sync_cond_clean(&rtc->syncCondExit);
 
     /* 4) Tear channels/ICE under channel_lock */
     core_mutex_lock(rtc->channel_lock);
@@ -1763,12 +2089,10 @@ void ctx_session_destroy(tuya_p2p_rtc_session_t *rtc)
 
     tuya_p2p_rtc_sdp_deinit(&rtc->local_sdp);
     tuya_p2p_rtc_sdp_deinit(&rtc->remote_sdp);
+    rtc->crypt_ready = false;
     mbedtls_md_free(&rtc->md_ctx);
     core_mutex_release(rtc->ref_lock);
     core_mutex_release(rtc->channel_lock);
-    if (s_exiting_rtc == rtc) {
-        s_exiting_rtc = NULL;
-    }
     free(rtc);
 }
 
@@ -1960,6 +2284,16 @@ void tuya_p2p_rtc_channels_destroy(tuya_p2p_rtc_session_t *rtc)
     return;
 }
 
+/* Non-zero while the cloud MQTT link is up. The worker only needs the
+ * transition, so a NULL callback is treated as "always connected". */
+static int __p2p_mqtt_connected(void)
+{
+    if (g_options.is_mqtt_connected == NULL) {
+        return 1;
+    }
+    return g_options.is_mqtt_connected() ? 1 : 0;
+}
+
 void *rtc_worker_thread(void *arg)
 {
     // Execute KCP sending and receiving in the same thread
@@ -1967,12 +2301,84 @@ void *rtc_worker_thread(void *arg)
     tuya_p2p_rtc_session_t *rtc = (tuya_p2p_rtc_session_t *)arg;
     uint64_t start_ms = tuya_p2p_misc_get_timestamp_ms();
     uint64_t last_dump_ms = 0;
+    uint64_t last_wm_ms = 0;
+    uint64_t last_resend_ms = start_ms;
+    uint64_t last_mqtt_check_ms = start_ms;
+    int last_mqtt_connected = __p2p_mqtt_connected();
     int timeout_logged = 0;
     int nego_done_logged = 0;
 
-    while (!rtc->bQuitKCPThread) {
+    while (!rtc_quit_requested(rtc)) {
+        uint64_t wm_now = tuya_p2p_misc_get_timestamp_ms();
+        if (wm_now - last_wm_ms >= P2P_STACK_WATERMARK_INTERVAL_MS) {
+            last_wm_ms = wm_now;
+            tuya_p2p_log_thread_stack("rtc_wrk", P2P_RTC_WORKER_STACK_SIZE);
+        }
+        /* If MQTT reconnects while ICE is still pending, the answer published
+         * before the drop was lost (the App does not always retry). Ask the
+         * signalling worker to resend it; candidates follow via the 1 s
+         * retransmit. An epoch callback also catches a drop and reconnect that
+         * both happen inside one polling interval; is_mqtt_connected is the
+         * fallback for applications that only expose a boolean. */
+        if (rtc->pIce != NULL && (wm_now - last_mqtt_check_ms) >= 500ULL) {
+            last_mqtt_check_ms = wm_now;
+            if (g_options.get_mqtt_conn_epoch != NULL) {
+                uint32_t answer_epoch = __atomic_load_n(&rtc->answer_conn_epoch, __ATOMIC_ACQUIRE);
+                uint32_t now_epoch = __p2p_mqtt_conn_epoch();
+
+                if ((answer_epoch != now_epoch) &&
+                    __atomic_load_n(&rtc->answer_sent, __ATOMIC_ACQUIRE) &&
+                    !pj_ice_session_is_nego_done(rtc->pIce) && !rtc_quit_requested(rtc)) {
+                    uint32_t gen = rtc->generation;
+
+                    if (s_msg_queue_incoming != NULL) {
+                        (void)bc_msg_queue_push_back(s_msg_queue_incoming, CTX_SIG_MSG_TYPE_RESEND_ANSWER, &gen,
+                                                     (int)sizeof(gen));
+                    }
+                    PR_NOTICE("p2p MQTT reconnected (epoch %u->%u), answer resend queued (gen=%u)", answer_epoch,
+                              now_epoch, gen);
+                }
+            } else {
+                int now_connected = __p2p_mqtt_connected();
+
+                if (!last_mqtt_connected && now_connected &&
+                    __atomic_load_n(&rtc->answer_sent, __ATOMIC_ACQUIRE) &&
+                    !pj_ice_session_is_nego_done(rtc->pIce) && !rtc_quit_requested(rtc)) {
+                    uint32_t gen = rtc->generation;
+
+                    if (s_msg_queue_incoming != NULL) {
+                        (void)bc_msg_queue_push_back(s_msg_queue_incoming, CTX_SIG_MSG_TYPE_RESEND_ANSWER, &gen,
+                                                     (int)sizeof(gen));
+                    }
+                    PR_NOTICE("p2p MQTT reconnected, answer resend queued (gen=%u)", gen);
+                }
+                last_mqtt_connected = now_connected;
+            }
+        }
+        /* Retransmit trickle candidates while ICE is pending: a signaling
+         * publish can be lost if MQTT drops right after the answer (observed
+         * as network_read -30848 when the App reconnects). Without it the App
+         * never receives the device candidate and every attempt times out. */
+        if (rtc->pIce != NULL && !pj_ice_session_is_nego_done(rtc->pIce) &&
+            __atomic_load_n(&rtc->answer_sent, __ATOMIC_ACQUIRE) &&
+            (wm_now - last_resend_ms) >= P2P_SIG_RESEND_INTERVAL_MS) {
+            int resent;
+
+            last_resend_ms = wm_now;
+            resent = __rtc_send_local_candidates(rtc, (pj_ice_strans *)rtc->pIce);
+            if (resent > 0) {
+                PR_DEBUG("p2p resend %d local candidate(s), ICE pending", resent);
+            }
+        }
         if (rtc->pIce != NULL) {
+            uint64_t pump_t0 = tuya_p2p_misc_get_timestamp_ms();
             pj_ice_session_handle_events(rtc->pIce, 5, NULL); // Drive ICE state update and execute KCP receive operation
+            /* The signalling worker cannot process the next offer while it
+             * joins this thread: report a pump that blocks instead of
+             * returning after its 5 ms tick. */
+            if (tuya_p2p_misc_get_timestamp_ms() - pump_t0 >= 500ULL) {
+                PR_WARN("rtc ice pump took %ums", (unsigned)(tuya_p2p_misc_get_timestamp_ms() - pump_t0));
+            }
         }
         for (int i = 0; i < 3; ++i) //(rtc->cfg.channel_number + 1)
         {
@@ -1994,15 +2400,19 @@ void *rtc_worker_thread(void *arg)
                     pj_ice_session_dbg_dump(rtc->pIce, "worker_pending");
                     if (!timeout_logged && rtc->cfg.connect_limit_time_ms > 0 &&
                         elapsed >= (uint64_t)rtc->cfg.connect_limit_time_ms) {
-                        const char *tm = "ice_timeout";
+                        uint32_t gen = rtc->generation;
+
                         pj_ice_session_dbg_dump(rtc->pIce, "worker_timeout");
                         timeout_logged = 1;
+                        /* Carry the generation: by the time the signalling
+                         * worker dequeues this, the App may have replaced the
+                         * session (a destroy join can block for seconds). */
                         /* Do NOT destroy here (would join self). Sig worker tears session down. */
                         if (s_msg_queue_incoming != NULL) {
-                            (void)bc_msg_queue_push_back(s_msg_queue_incoming, CTX_SIG_MSG_TYPE_ICE_TIMEOUT, tm,
-                                                         (int)strlen(tm));
+                            (void)bc_msg_queue_push_back(s_msg_queue_incoming, CTX_SIG_MSG_TYPE_ICE_TIMEOUT, &gen,
+                                                         (int)sizeof(gen));
                         }
-                        rtc->bQuitKCPThread = true;
+                        rtc_set_quit(rtc, true);
                         break;
                     }
                 } else if (rtc->pIce != NULL && !nego_done_logged) {
@@ -2012,6 +2422,10 @@ void *rtc_worker_thread(void *arg)
             }
         }
     }
+
+    PR_DEBUG("rtc_wrk exit quit=%d nego_done=%d elapsed=%ums", rtc_quit_requested(rtc) ? 1 : 0,
+             (rtc->pIce != NULL && pj_ice_session_is_nego_done(rtc->pIce)) ? 1 : 0,
+             (unsigned)(tuya_p2p_misc_get_timestamp_ms() - start_ms));
     return NULL;
 }
 
@@ -2031,12 +2445,19 @@ int32_t tuya_p2p_rtc_dosend_data(tuya_p2p_rtc_session_t *rtc, uint32_t channel_i
     int already = 0;
     int rc = 0;
     uint64_t begin_time = 0;
+    uint64_t wait_begin = 0;
+    uint64_t wait_last_log = 0;
     int fragement_len = (int)g_options.fragement_len;
     if (fragement_len <= 0 || fragement_len > 1300) {
         fragement_len = 1300;
     }
 
     while (remain > 0) {
+        /* A quitting session is terminal: even a partially sent frame is
+         * incomplete, so never report a positive count to the caller. */
+        if (rtc_quit_requested(rtc)) {
+            return TUYA_P2P_ERROR_SESSION_CLOSED_TIMEOUT;
+        }
         core_mutex_lock(rtc->channel_lock);
         if (rtc->channels == NULL) {
             core_mutex_unlock(rtc->channel_lock);
@@ -2060,6 +2481,29 @@ int32_t tuya_p2p_rtc_dosend_data(tuya_p2p_rtc_session_t *rtc, uint32_t channel_i
             return TUYA_P2P_ERROR_SESSION_CLOSED_TIMEOUT;
         }
         while (tuya_mbuf_queue_get_free_size(chan->send_queue) <= 0) {
+            /* A send that stops here is the difference between "queue is full"
+             * and "blocked on channel_lock": log the wait so a stalled media
+             * thread can be attributed without a debugger. */
+            if (wait_begin == 0) {
+                wait_begin = tuya_p2p_misc_get_timestamp_ms();
+                wait_last_log = wait_begin;
+                PR_NOTICE("rtc send wait: ch=%u free=%d waitsnd=%d", (unsigned)channel_id,
+                          (int)tuya_mbuf_queue_get_free_size(chan->send_queue), ikcp_waitsnd(chan->kcp));
+            } else {
+                uint64_t wait_now = tuya_p2p_misc_get_timestamp_ms();
+                if (wait_now - wait_last_log >= 500) {
+                    wait_last_log = wait_now;
+                    PR_NOTICE("rtc send still waiting: ch=%u %ums free=%d waitsnd=%d", (unsigned)channel_id,
+                              (unsigned)(wait_now - wait_begin),
+                              (int)tuya_mbuf_queue_get_free_size(chan->send_queue), ikcp_waitsnd(chan->kcp));
+                }
+            }
+            /* Session teardown must not wait for KCP acks that will never come
+             * (the peer is gone and the send queue stays full). */
+            if (rtc_quit_requested(rtc)) {
+                core_mutex_unlock(rtc->channel_lock);
+                return TUYA_P2P_ERROR_SESSION_CLOSED_TIMEOUT;
+            }
             if (timeout_ms == 0) {
                 core_mutex_unlock(rtc->channel_lock);
                 if (already > 0) {
@@ -2082,10 +2526,9 @@ int32_t tuya_p2p_rtc_dosend_data(tuya_p2p_rtc_session_t *rtc, uint32_t channel_i
             core_mutex_unlock(rtc->channel_lock);
             core_system_sleep((20 * 1000 + 999) / 1000);
             core_mutex_lock(rtc->channel_lock);
-            if (rtc->channels == NULL) {
+            if (rtc->channels == NULL || rtc_quit_requested(rtc)) {
                 core_mutex_unlock(rtc->channel_lock);
-                rc = -1;
-                goto dosend_out;
+                return TUYA_P2P_ERROR_SESSION_CLOSED_TIMEOUT;
             }
             chan = &rtc->channels[channel_id];
             if (chan->kcp == NULL || chan->send_queue == NULL) {
@@ -2093,6 +2536,14 @@ int32_t tuya_p2p_rtc_dosend_data(tuya_p2p_rtc_session_t *rtc, uint32_t channel_i
                 rc = -1;
                 goto dosend_out;
             }
+        }
+
+        if (wait_begin != 0) {
+            uint64_t waited = tuya_p2p_misc_get_timestamp_ms() - wait_begin;
+            if (waited > 100) {
+                PR_NOTICE("rtc send wait done: ch=%u waited=%ums", (unsigned)channel_id, (unsigned)waited);
+            }
+            wait_begin = 0;
         }
 
         {
@@ -2182,11 +2633,17 @@ int32_t tuya_p2p_rtc_send_data(int32_t handle, uint32_t channel_id, char *buf, i
     tuya_p2p_rtc_session_t *rtc = g_pRtcSession;
     if (rtc == NULL) {
         core_mutex_unlock(g_p2p_session_mutex);
-        tuya_p2p_log_error("rtc session %08x recv data: invalid session\n", handle);
+        tuya_p2p_log_error("rtc session %08x send data: invalid session\n", handle);
         return TUYA_P2P_ERROR_INVALID_SESSION_HANDLE;
     }
-    int32_t ret = tuya_p2p_rtc_dosend_data(rtc, channel_id, buf, len, timeout_ms);
+    /* dosend_data() can block for a long time (or until teardown), so do not
+     * hold the global session mutex across it: the signalling worker needs
+     * that mutex to mark the session as quitting. The ref keeps rtc alive. */
+    rtc_ref_cnt_add(rtc);
     core_mutex_unlock(g_p2p_session_mutex);
+
+    int32_t ret = tuya_p2p_rtc_dosend_data(rtc, channel_id, buf, len, timeout_ms);
+    rtc_ref_cnt_del(rtc);
     return ret;
 }
 
@@ -2249,7 +2706,7 @@ int32_t tuya_p2p_rtc_dorecv_data2(tuya_p2p_rtc_session_t *rtc, uint32_t channel_
 
     while (1) {
         core_mutex_lock(rtc->channel_lock);
-        if ((rtc->channels == NULL) || (rtc->bQuitKCPThread)) {
+        if ((rtc->channels == NULL) || rtc_quit_requested(rtc)) {
             core_mutex_unlock(rtc->channel_lock);
             ret = -4;
             break;
@@ -2322,16 +2779,27 @@ int32_t tuya_p2p_rtc_recv_data(int32_t handle, uint32_t channel_id, char *buf, i
 
 void tuya_p2p_rtc_notify_exit()
 {
-    tuya_p2p_rtc_session_t *rtc;
+    tuya_p2p_rtc_session_t *rtc = NULL;
 
+    if (g_p2p_session_mutex == NULL) {
+        return;
+    }
+    /* Take a ref under the API lock: teardown clears s_exiting_rtc under the
+     * same lock and waits for this ref before cleaning syncCondExit. */
+    core_mutex_lock(g_p2p_session_mutex);
     rtc = g_pRtcSession;
     if (rtc == NULL) {
         rtc = s_exiting_rtc;
     }
+    if (rtc != NULL) {
+        rtc_ref_cnt_add(rtc);
+    }
+    core_mutex_unlock(g_p2p_session_mutex);
     if (rtc == NULL) {
         return;
     }
     sync_cond_notify(&rtc->syncCondExit);
+    rtc_ref_cnt_del(rtc);
 }
 
 int32_t tuya_p2p_rtc_check(int32_t handle)
@@ -2380,6 +2848,9 @@ int32_t tuya_p2p_rtc_get_link_rate(int32_t handle, uint32_t channel_id, uint32_t
     int ret = 0;
     (void)handle;
 
+    if (g_p2p_session_mutex == NULL) {
+        return TUYA_P2P_ERROR_INVALID_SESSION_HANDLE;
+    }
     core_mutex_lock(g_p2p_session_mutex);
     if (g_pRtcSession == NULL) {
         core_mutex_unlock(g_p2p_session_mutex);
@@ -2465,6 +2936,9 @@ int32_t tuya_p2p_rtc_drop_unsent(int32_t handle, uint32_t channel_id, uint32_t *
     if (p_dropped != NULL) {
         *p_dropped = 0;
     }
+    if (g_p2p_session_mutex == NULL) {
+        return TUYA_P2P_ERROR_INVALID_SESSION_HANDLE;
+    }
     core_mutex_lock(g_p2p_session_mutex);
     if (g_pRtcSession == NULL || g_pRtcSession->channels == NULL) {
         core_mutex_unlock(g_p2p_session_mutex);
@@ -2495,6 +2969,9 @@ int32_t tuya_p2p_rtc_clear_send_buffer(int32_t handle, uint32_t channel_id)
     uint32_t conv;
     (void)handle;
 
+    if (g_p2p_session_mutex == NULL) {
+        return TUYA_P2P_ERROR_INVALID_SESSION_HANDLE;
+    }
     core_mutex_lock(g_p2p_session_mutex);
     if (g_pRtcSession == NULL || g_pRtcSession->channels == NULL) {
         core_mutex_unlock(g_p2p_session_mutex);
@@ -2531,6 +3008,13 @@ int32_t tuya_p2p_rtc_clear_send_buffer(int32_t handle, uint32_t channel_id)
 
 int rtc_init_mbedtls_md_and_aes(tuya_p2p_rtc_session_t *rtc)
 {
+    if (rtc == NULL) {
+        return -1;
+    }
+    if (rtc->crypt_ready) {
+        mbedtls_md_free(&rtc->md_ctx);
+    }
+    rtc->crypt_ready = false;
     if (rtc->cfg.role == PJ_ROLE_CALLEE /*RTC_ROLE_CALLEE*/) {
         int ret = tuya_p2p_rtc_sdp_get_aes_key(&rtc->remote_sdp, rtc->aes_key, sizeof(rtc->aes_key));
         if (ret < 0) {
@@ -2552,7 +3036,11 @@ int rtc_init_mbedtls_md_and_aes(tuya_p2p_rtc_session_t *rtc)
     if (rtc->md_info == NULL) {
         return -1;
     }
-    mbedtls_md_setup(&rtc->md_ctx, rtc->md_info, 1);
+    mbedtls_md_init(&rtc->md_ctx);
+    if (mbedtls_md_setup(&rtc->md_ctx, rtc->md_info, 1) != 0) {
+        return -1;
+    }
+    rtc->crypt_ready = true;
 
     return 0;
 }
@@ -2639,17 +3127,24 @@ uint32_t tuya_p2p_rtc_get_skill()
 
 int32_t tuya_p2p_rtc_deinit()
 {
+    int had_session = (g_pRtcSession != NULL);
+
+    /* The worker destroys a live session on its own thread before exiting
+     * (it owns the libre re context). Keep a fallback for a session created
+     * outside the worker path. */
     ctx_deinit_msg_queue_and_worker();
-    if (g_pRtcSession == NULL) {
-        return TUYA_P2P_ERROR_NOT_INITIALIZED;
+    if (g_pRtcSession != NULL) {
+        /* The signaling worker normally owns the destroy (and the libre re
+         * context). Reaching this path means the session outlived its worker;
+         * log it so an ownership bug is visible in the field. */
+        PR_WARN("p2p deinit fallback: destroying session off the signaling worker");
+        ctx_session_destroy(g_pRtcSession);
+        g_pRtcSession = NULL;
     }
-    //core_mutex_lock(g_p2p_session_mutex);
-    ctx_session_destroy(g_pRtcSession);
-    g_pRtcSession = NULL;
-    //core_mutex_unlock(g_p2p_session_mutex);
-    core_mutex_release(g_p2p_session_mutex);
-    g_p2p_session_mutex = NULL;
-    return 0;
+    /* g_p2p_session_mutex is intentionally process-lifetime: an API caller
+     * may have read the non-NULL handle just before deinit. Do not release
+     * it here (a single mutex is reclaimed at process exit). */
+    return had_session ? 0 : TUYA_P2P_ERROR_NOT_INITIALIZED;
 }
 
 int32_t tuya_p2p_rtc_connect(char *remote_id, char *token, uint32_t token_len, char *trace_id, int lan_mode,
@@ -2687,19 +3182,36 @@ int32_t tuya_p2p_rtc_recv_frame(int32_t handle, tuya_p2p_rtc_frame_t *frame)
 ///////////////////////////////////////////////////////////////////////
 // logs
 
+/* The log upload hook is disabled in this build: assembling a JSON object on
+ * every call only burns stack (1 KB) and CPU, and the media/signalling threads
+ * have small stacks. Set to 1 to restore the old assembly path. */
+#ifndef TUYA_P2P_LOG_UPLOAD_ENABLE
+#define TUYA_P2P_LOG_UPLOAD_ENABLE 0
+#endif
+
+#if TUYA_P2P_LOG_UPLOAD_ENABLE
 static const char *level_names[] = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
+#endif
 
 void tuya_p2p_log_log(int level, const char *file, int line, const char *fmt, ...)
 {
+#if !TUYA_P2P_LOG_UPLOAD_ENABLE
+    (void)level;
+    (void)file;
+    (void)line;
+    (void)fmt;
+    return;
+#else
     // if (TUYA_P2P_LOG_DEBUG < tuya_p2p_log_get_level()) {
     //     return;
     // }
 
-    static char buf[8096] = {0};
-    memset(buf, 0, sizeof(buf));
+    /* Stack-local and bounded: this function can be called from several
+     * threads (rtc_wrk, signalling worker, media threads). */
+    char buf[512];
     va_list args;
     va_start(args, fmt);
-    vsprintf(buf, fmt, args);
+    vsnprintf(buf, sizeof(buf), fmt, args);
 
     cJSON *jlog = cJSON_CreateObject();
     cJSON *jt = cJSON_CreateNumber(tuya_p2p_misc_get_timestamp_ms());
@@ -2724,4 +3236,5 @@ void tuya_p2p_log_log(int level, const char *file, int line, const char *fmt, ..
         cJSON_Delete(jlog);
     }
     va_end(args);
+#endif
 }

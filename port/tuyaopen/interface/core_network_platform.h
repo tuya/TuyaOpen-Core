@@ -41,6 +41,13 @@
 #include "lwip/netdb.h"
 #include "lwip/inet.h"
 
+/*
+ * On this port fcntl() maps to lwip_fcntl(), which tests lwIP's O_NONBLOCK
+ * bit (1). newlib's <fcntl.h> defines O_NONBLOCK as 0x4000, so the core must
+ * not use the libc flag value here.
+ */
+#define CORE_NET_O_NONBLOCK 1
+
 #endif
 
 #define CORE_NET_NATIVE_FD_SET(fds) ((fd_set *)(fds))
