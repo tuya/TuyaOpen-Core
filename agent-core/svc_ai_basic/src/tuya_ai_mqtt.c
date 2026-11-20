@@ -71,7 +71,7 @@ STATIC OPERATE_RET __ai_mq_do_interrupt(ty_cJSON *root)
         BYTE_T *out = NULL;
         UINT_T out_len = 0;
         tuya_pack_user_attrs(attr, CNTSOF(attr), &out, &out_len);
-        core_free(tmp);
+        ty_cJSON_FreeBuffer(tmp);
         AI_EVENT_ATTR_T event;
         memset(&event, 0, SIZEOF(AI_EVENT_ATTR_T));
         strncpy(event.event_id, eventId->valuestring, AI_UUID_V4_LEN);
@@ -102,7 +102,7 @@ STATIC OPERATE_RET __ai_mq_do_interrupt(ty_cJSON *root)
             AI_EVENT_HEAD_T head = {0};
             head.type = AI_EVENT_CHAT_BREAK;
             rt = cfg->event_cb(&event, &head, NULL);
-            core_free(out);
+            ty_cJSON_FreeBuffer(out);
         } else {
             PR_ERR("creat cjson obj error");
             return OPRT_COM_ERROR;

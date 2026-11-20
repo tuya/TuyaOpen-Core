@@ -311,7 +311,7 @@ OPERATE_RET tuya_device_meta_report(void)
     /* 2. Send request (blocking) */
     response_used = true;
     rt = atop_base_request(&atop_request, &response);
-    core_free(buffer);
+    cJSON_free(buffer);
     buffer = NULL;
 
     if (rt != OPRT_OK) {
@@ -333,7 +333,7 @@ OPERATE_RET tuya_device_meta_report(void)
 
 __EXIT:
     if (buffer != NULL) {
-        core_free(buffer);
+        cJSON_free(buffer);
         buffer = NULL;
     }
     if (local_json != NULL) {
