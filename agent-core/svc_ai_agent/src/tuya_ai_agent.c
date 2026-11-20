@@ -1018,7 +1018,7 @@ OPERATE_RET tuya_ai_agent_crt_session(CHAR_T *scode, UINT_T bizCode, UINT64_T bi
             }
         };
         tuya_pack_user_attrs(def_attr, CNTSOF(def_attr), &out, &out_len);
-        Free(session_attrs);
+        ty_cJSON_FreeBuffer(session_attrs);
         ty_cJSON_Delete(root);
 #else
         ty_cJSON *attr_info         = ty_cJSON_CreateObject();
@@ -1079,7 +1079,11 @@ OPERATE_RET tuya_ai_agent_crt_session(CHAR_T *scode, UINT_T bizCode, UINT64_T bi
         __ai_agent_set_sid(session, scode, sid, &session_cfg, agent.token);
     }
     if (attr == NULL) {
+#if defined(AI_VERSION) && (0x01 == AI_VERSION)
         Free(out);
+#else
+        ty_cJSON_FreeBuffer(out);
+#endif
     }
     return rt;
 }
@@ -1398,7 +1402,11 @@ STATIC OPERATE_RET __ai_event_start(AI_SESSION_ID sid, AI_SESSION_ID eid)
     AI_PROTO_D("event start attr: %s ", out);
 #endif
     rt = tuya_ai_event_start(sid, eid, out, out_len);
+#if defined(AI_VERSION) && (0x01 == AI_VERSION)
     Free(out);
+#else
+    ty_cJSON_FreeBuffer(out);
+#endif
     return rt;
 }
 

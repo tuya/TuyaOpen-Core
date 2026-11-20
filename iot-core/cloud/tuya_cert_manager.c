@@ -565,7 +565,7 @@ OPERATE_RET http_iot_dns_get_root_ca(void)
         PR_ERR("get root ca err:%d", op_ret);
     }
 
-    core_free(p_buffer);
+    cJSON_free(p_buffer);
     return op_ret;
 }
 
@@ -679,7 +679,7 @@ static void __cert_query_tm_cb(TIMER_ID timerID, void *pTimerArg)
         PR_ERR("cert verify/refresh err:%d", op_ret);
     }
 
-    core_free(p_buffer);
+    cJSON_free(p_buffer);
     return;
 }
 #endif
