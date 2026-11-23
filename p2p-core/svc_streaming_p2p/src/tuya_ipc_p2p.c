@@ -1862,6 +1862,24 @@ static int __p2p_session_pack_resp(P2P_SESSION_T *pSession, void *pSrc, void *pP
     return ret;
 }
 
+/*
+ * Copy a request payload into a zeroed local struct, taking only the bytes the
+ * peer actually declared. Handlers index the payload as a request struct
+ * without consulting the header length, so a short frame would otherwise read
+ * whatever the previous command left in read_buff. A truncated request now
+ * reads as zeroes, which every handler already treats as an invalid or default
+ * value.
+ */
+static void __p2p_cmd_req_copy(void *dst, size_t dst_len, const void *src, uint32_t declared)
+{
+    size_t n = ((size_t)declared < dst_len) ? (size_t)declared : dst_len;
+
+    memset(dst, 0, dst_len);
+    if (n != 0) {
+        memcpy(dst, src, n);
+    }
+}
+
 static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
 {
     P2P_CMD_PARSE_T *pCmd = NULL;
@@ -1880,11 +1898,12 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
     switch (pFixedHead->high_cmd) {
     case TY_C2C_CMD_QUERY_FIXED_ABILITY:
     case TY_C2C_CMD_QUERY_FIXED_ABILITY_GW: {
-        C2C_TRANS_QUERY_FIXED_ABI_REQ *pAbiReq = (C2C_TRANS_QUERY_FIXED_ABI_REQ *)pPayload;
+        C2C_TRANS_QUERY_FIXED_ABI_REQ abiReq;
         C2C_TRANS_QUERY_FIXED_ABI_RESP abiResp;
 
+        __p2p_cmd_req_copy(&abiReq, sizeof(abiReq), pPayload, pFixedHead->length);
         memset(&abiResp, 0, sizeof(abiResp));
-        abiResp.channel = pAbiReq->channel;
+        abiResp.channel = abiReq.channel;
         /* Report video + mic + speaker so App enables uplink/downlink */
         abiResp.ability_mask = (TY_CMD_QUERY_IPC_FIXED_ABILITY_TYPE_VIDEO |
                                 TY_CMD_QUERY_IPC_FIXED_ABILITY_TYPE_SPEAKER |
@@ -1897,13 +1916,13 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
     case TY_C2C_CMD_QUERY_AUDIO_PARAMS: {
         // Query audio parameters — App uses this for intercom encode-to-device
         C2C_TRANS_QUERY_AUDIO_PARAM_RESP_E *pAudioResp = NULL;
-        C2C_TRANS_QUERY_AUDIO_PARAM_REQ_T *pAudioReq;
-        pAudioReq = (C2C_TRANS_QUERY_AUDIO_PARAM_REQ_T *)pPayload;
+        C2C_TRANS_QUERY_AUDIO_PARAM_REQ_T audioReq;
+        __p2p_cmd_req_copy(&audioReq, sizeof(audioReq), pPayload, pFixedHead->length);
         int respLen = sizeof(C2C_TRANS_QUERY_AUDIO_PARAM_RESP_E) + sizeof(AUDIO_PARAM_T);
         pAudioResp = (C2C_TRANS_QUERY_AUDIO_PARAM_RESP_E *)Malloc(respLen);
         if (NULL != pAudioResp) {
             memset(pAudioResp, 0, (size_t)respLen);
-            pAudioResp->channel = pAudioReq->channel;
+            pAudioResp->channel = audioReq.channel;
             pAudioResp->count = 1;
             /* Use speak_* decode params, not uplink encode alone */
             if (sg_p2p_session->speak_audio_enable) {
@@ -1927,7 +1946,7 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
             // Send failure message to app
             C2C_CMD_IO_CTRL_COM_RESP_T comResp;
             memset(&comResp, 0x00, sizeof(comResp));
-            comResp.channel = pAudioReq->channel;
+            comResp.channel = audioReq.channel;
             comResp.result = TY_C2C_CMD_IO_CTRL_COMMAND_FAILED;
             __p2p_session_pack_resp(pSession, pData, &comResp, sizeof(C2C_CMD_IO_CTRL_COM_RESP_T));
         }
@@ -1936,13 +1955,13 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
     case TY_C2C_CMD_QUERY_VIDEO_STREAM_PARAMS: {
         // Query video parameters — reply with configured av_Info streams
         C2C_TRANS_QUERY_VIDEO_PARAM_RESP_T *pVideoResp = NULL;
-        C2C_TRANS_QUERY_VIDEO_PARAM_REQ_T *pVideoReq;
+        C2C_TRANS_QUERY_VIDEO_PARAM_REQ_T videoReq;
         uint32_t stream_idx[2];
         uint32_t count = 0;
         int respLen;
         uint32_t i;
 
-        pVideoReq = (C2C_TRANS_QUERY_VIDEO_PARAM_REQ_T *)pPayload;
+        __p2p_cmd_req_copy(&videoReq, sizeof(videoReq), pPayload, pFixedHead->length);
         /* Order: standard(sub) then high(main), matching clarity enum */
         if (sg_p2p_session->av_Info.width[eIpcStreamVideoSub] > 0) {
             stream_idx[count++] = eIpcStreamVideoSub;
@@ -1960,7 +1979,7 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
         }
         if (NULL != pVideoResp) {
             memset(pVideoResp, 0, (size_t)respLen);
-            pVideoResp->channel = pVideoReq->channel;
+            pVideoResp->channel = videoReq.channel;
             pVideoResp->count = count;
             for (i = 0; i < count; i++) {
                 uint32_t ch = stream_idx[i];
@@ -1978,7 +1997,7 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
             // Send failure message to app
             C2C_CMD_IO_CTRL_COM_RESP_T comResp;
             memset(&comResp, 0x00, sizeof(comResp));
-            comResp.channel = pVideoReq->channel;
+            comResp.channel = videoReq.channel;
             comResp.result = TY_C2C_CMD_IO_CTRL_COMMAND_FAILED;
             PR_DEBUG("fail av_info empty or malloc");
             __p2p_session_pack_resp(pSession, pData, &comResp, sizeof(C2C_CMD_IO_CTRL_COM_RESP_T));
@@ -1990,10 +2009,10 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
         // Video clarity feedback
         PR_DEBUG("recv session[%d] query video clarity", pSession->session);
         C2C_TRANS_QUERY_VIDEO_CLARITY_RESP_T ClarityResp = {0};
-        C2C_TRANS_QUERY_VIDEO_CLARITY_REQ_T *clarityReq;
-        clarityReq = (C2C_TRANS_QUERY_VIDEO_CLARITY_REQ_T *)pPayload;
+        C2C_TRANS_QUERY_VIDEO_CLARITY_REQ_T clarityReq;
 
-        ClarityResp.channel = clarityReq->channel;
+        __p2p_cmd_req_copy(&clarityReq, sizeof(clarityReq), pPayload, pFixedHead->length);
+        ClarityResp.channel = clarityReq.channel;
         ClarityResp.sp_mode =
             TY_VIDEO_CLARITY_INNER_STANDARD | TY_VIDEO_CLARITY_INNER_HIGH; // Currently SDK supports fixed format
         // p2p_get_clarity(&ClarityResp.sp_mode);
@@ -2003,23 +2022,25 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
         break;
     }
     case TY_C2C_CMD_IO_CTRL_VIDEO: {
-        C2C_TRANS_CTRL_VIDEO_REQ_T *parm = (C2C_TRANS_CTRL_VIDEO_REQ_T *)pPayload;
-        PR_DEBUG("CTRL VIDEO session[%d] chn[%d] op[%d]", pSession->session, parm->channel, parm->operation);
+        C2C_TRANS_CTRL_VIDEO_REQ_T parm;
         C2C_CMD_IO_CTRL_COM_RESP_T comResp;
+
+        __p2p_cmd_req_copy(&parm, sizeof(parm), pPayload, pFixedHead->length);
+        PR_DEBUG("CTRL VIDEO session[%d] chn[%d] op[%d]", pSession->session, parm.channel, parm.operation);
         memset(&comResp, 0x00, sizeof(comResp));
-        comResp.channel = parm->channel;
+        comResp.channel = parm.channel;
         comResp.result = TY_C2C_CMD_IO_CTRL_COMMAND_RECV;
         __p2p_session_pack_resp(pSession, pData, &comResp, sizeof(C2C_CMD_IO_CTRL_COM_RESP_T));
-        switch (parm->operation) {
+        switch (parm.operation) {
         case TY_CMD_IO_CTRL_VIDEO_PLAY: {
             // When requesting video, save reqId for response
             pSession->video_req_id = pCmd->reqId;
             //   PR_DEBUG("CTRL VIDEO START session[%d] chn[%d]
             //   op[%d]",pSession->session,parm->channel,parm->operation);
             // 20190416add
-            if (0 != parm->channel) {
-                PR_DEBUG("session [%d] recv chn[%d]", pSession->session, parm->channel);
-                pSession->cur_clarity = parm->channel;
+            if (0 != parm.channel) {
+                PR_DEBUG("session [%d] recv chn[%d]", pSession->session, parm.channel);
+                pSession->cur_clarity = parm.channel;
             }
             if (OPRT_OK != __p2p_session_trans_video_start(pSession)) {
                 PR_ERR("CTRL VIDEO START failed");
@@ -2045,29 +2066,31 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
             break;
         }
         default:
-            PR_ERR("CTRL ERROR chn[%d] op[%d]", parm->channel, parm->operation);
+            PR_ERR("CTRL ERROR chn[%d] op[%d]", parm.channel, parm.operation);
             break;
         }
         break;
     }
     case TY_C2C_CMD_IO_CTRL_VIDEO_CLARITY: {
-        C2C_TRANS_CTRL_VIDEO_CLARITY_T *parm = (C2C_TRANS_CTRL_VIDEO_CLARITY_T *)pPayload;
+        C2C_TRANS_CTRL_VIDEO_CLARITY_T parm;
         C2C_TRANS_LIVE_CLARITY_PARAM_S outParm = {0};
+        C2C_CMD_IO_CTRL_COM_RESP_T comResp;
+
+        __p2p_cmd_req_copy(&parm, sizeof(parm), pPayload, pFixedHead->length);
         outParm.clarity =
-            (parm->mode == TY_VIDEO_CLARITY_INNER_HIGH) ? TY_VIDEO_CLARITY_HIGH : TY_VIDEO_CLARITY_STANDARD;
+            (parm.mode == TY_VIDEO_CLARITY_INNER_HIGH) ? TY_VIDEO_CLARITY_HIGH : TY_VIDEO_CLARITY_STANDARD;
         /* Keep session clarity in INNER enum used by p2p_get_chn_idx / ext header */
-        if (parm->mode == TY_VIDEO_CLARITY_INNER_STANDARD || parm->mode == TY_VIDEO_CLARITY_INNER_HIGH ||
-            parm->mode == TY_VIDEO_CLARITY_INNER_PROFLOW || parm->mode == TY_VIDEO_CLARITY_S_INNER_HIGH ||
-            parm->mode == TY_VIDEO_CLARITY_SS_INNER_HIGH) {
-            pSession->cur_clarity = (TRANSFER_VIDEO_CLARITY_TYPE_INNER_E)parm->mode;
+        if (parm.mode == TY_VIDEO_CLARITY_INNER_STANDARD || parm.mode == TY_VIDEO_CLARITY_INNER_HIGH ||
+            parm.mode == TY_VIDEO_CLARITY_INNER_PROFLOW || parm.mode == TY_VIDEO_CLARITY_S_INNER_HIGH ||
+            parm.mode == TY_VIDEO_CLARITY_SS_INNER_HIGH) {
+            pSession->cur_clarity = (TRANSFER_VIDEO_CLARITY_TYPE_INNER_E)parm.mode;
         } else {
             pSession->cur_clarity = TY_VIDEO_CLARITY_INNER_HIGH;
         }
         PR_DEBUG("set video clarity session[%d]chn[%d] op[%d] clarity[%d] cur_inner=%u", pSession->session,
-                 parm->channel, parm->mode, outParm.clarity, (uint32_t)pSession->cur_clarity);
-        C2C_CMD_IO_CTRL_COM_RESP_T comResp;
+                 parm.channel, parm.mode, outParm.clarity, (uint32_t)pSession->cur_clarity);
         memset(&comResp, 0x00, sizeof(comResp));
-        comResp.channel = parm->channel;
+        comResp.channel = parm.channel;
         comResp.result = TY_C2C_CMD_IO_CTRL_COMMAND_SUCCESS;
         __p2p_session_pack_resp(pSession, pData, &comResp, sizeof(C2C_CMD_IO_CTRL_COM_RESP_T));
         break;
@@ -2093,17 +2116,19 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
     }
     case TY_C2C_CMD_IO_CTRL_AUDIO: {
         /* Downlink intercom: APP starts/stops speaker */
-        C2C_TRANS_CTRL_AUDIO_REQ_T *parm = (C2C_TRANS_CTRL_AUDIO_REQ_T *)pPayload;
+        C2C_TRANS_CTRL_AUDIO_REQ_T parm;
         C2C_CMD_IO_CTRL_COM_RESP_T comResp;
-        PR_DEBUG("SPEAKER op=%u ch=%u reqId=%d", (uint32_t)parm->operation,
-                  (uint32_t)parm->channel, pCmd->reqId);
+
+        __p2p_cmd_req_copy(&parm, sizeof(parm), pPayload, pFixedHead->length);
+        PR_DEBUG("SPEAKER op=%u ch=%u reqId=%d", (uint32_t)parm.operation,
+                  (uint32_t)parm.channel, pCmd->reqId);
         memset(&comResp, 0x00, sizeof(comResp));
-        comResp.channel = parm->channel;
+        comResp.channel = parm.channel;
         /* SPEAKER start/stop ACK with COMMAND_RECV(1), not SUCCESS(3) */
         comResp.result = TY_C2C_CMD_IO_CTRL_COMMAND_RECV;
         __p2p_session_pack_resp(pSession, pData, &comResp, sizeof(C2C_CMD_IO_CTRL_COM_RESP_T));
 
-        if (parm->operation == TY_CMD_IO_CTRL_AUDIO_SPEAKER_START) {
+        if (parm.operation == TY_CMD_IO_CTRL_AUDIO_SPEAKER_START) {
             pSession->speak_req_id = pCmd->reqId;
             pSession->cmd = (P2P_CMD_E)(pSession->cmd | P2P_SPEAKER);
             if (!pSession->audio_downlink_on) {
@@ -2111,7 +2136,7 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
                 if (pSession->on_live_audio_start_callback) {
                     (void) pSession->on_live_audio_start_callback();
                 }
-                (void)tuya_ipc_media_stream_event_call(0, (int)parm->channel, MEDIA_STREAM_SPEAKER_START, NULL);
+                (void)tuya_ipc_media_stream_event_call(0, (int)parm.channel, MEDIA_STREAM_SPEAKER_START, NULL);
                 THREAD_CFG_T thrd_param = {0};
                 thrd_param.stackDepth = 8192;
                 thrd_param.priority = THREAD_PRIO_3;
@@ -2119,10 +2144,10 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
                 core_thread_create_and_start(&pSession->audio_downlink_thread, NULL, NULL,
                                             __p2p_audio_downlink_recv_proc, NULL, &thrd_param);
             }
-        } else if (parm->operation == TY_CMD_IO_CTRL_AUDIO_SPEAKER_STOP) {
-            __p2p_audio_downlink_stop(pSession, (int)parm->channel);
+        } else if (parm.operation == TY_CMD_IO_CTRL_AUDIO_SPEAKER_STOP) {
+            __p2p_audio_downlink_stop(pSession, (int)parm.channel);
         } else {
-            PR_DEBUG("unknown speaker op=%u", (uint32_t)parm->operation);
+            PR_DEBUG("unknown speaker op=%u", (uint32_t)parm.operation);
         }
         break;
     }
@@ -2200,9 +2225,12 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
         uint32_t low = (uint32_t)pFixedHead->low_cmd;
         C2C_CMD_IO_CTRL_COM_RESP_T comResp;
         MEDIA_STREAM_EVENT_E ev = MEDIA_STREAM_NULL;
-        void *args = pPayload;
+        /* Only the events below publish an argument; NULL keeps the callback
+         * from casting a short payload to a struct it never filled. */
+        void *args = NULL;
         uint32_t ch = 0;
         C2C_TRANS_CTRL_PB_START pb_start;
+        C2C_TRANS_CTRL_PB_SET_SPEED set_speed;
 
         if (pFixedHead->length >= sizeof(uint32_t)) {
             memcpy(&ch, pPayload, sizeof(uint32_t));
@@ -2246,6 +2274,7 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
                 pb_start.reqId = (uint32_t)pCmd->reqId;
                 args = &pb_start;
             } else {
+                /* Event is still delivered, but with no argument at all. */
                 PR_ERR("pb START payload too short: len=%d", (int)pFixedHead->length);
                 PR_HEXDUMP_ERR("pb START raw", (uint8_t *)pPayload, (int)pFixedHead->length);
             }
@@ -2284,6 +2313,9 @@ static int __p2p_session_cmd_parse_server(P2P_SESSION_T *pSession, void *pData)
         } else if (low == 14 || low == (uint32_t)MEDIA_STREAM_PLAYBACK_UNMUTE) {
             ev = MEDIA_STREAM_PLAYBACK_UNMUTE;
         } else if (low == 16 || low == (uint32_t)MEDIA_STREAM_PLAYBACK_SET_SPEED) {
+            __p2p_cmd_req_copy(&set_speed, sizeof(set_speed), pPayload, pFixedHead->length);
+            set_speed.reqId = (uint32_t)pCmd->reqId;
+            args = &set_speed;
             ev = MEDIA_STREAM_PLAYBACK_SET_SPEED;
         } else if (low == (uint32_t)TY_CMD_IO_CTRL_AUDIO_MIC_START) {
             /* App PB accompaniment start: allow audio channel flag */
@@ -2366,6 +2398,14 @@ static int __p2p_read_cmd(P2P_SESSION_T *pSession)
     P2P_DATA_PARSE_T *pDataParse = &pSession->proto_parse;
     P2P_CMD_PARSE_T *pReadBuff = (P2P_CMD_PARSE_T *)(pDataParse->read_buff);
     int32_t recv_len = (int32_t)pDataParse->read_size;
+
+    if ((pDataParse->cur_read < 0) || (pDataParse->read_size < 0) ||
+        (pDataParse->read_size > (int32_t)sizeof(pDataParse->read_buff) - pDataParse->cur_read)) {
+        PR_ERR("session[%d] invalid parse state cur[%d] size[%d]", pSession->session, pDataParse->cur_read,
+               pDataParse->read_size);
+        return -4;
+    }
+
     ret = tuya_p2p_rtc_recv_data(pSession->session, TUYA_CMD_CHANNEL, pDataParse->read_buff + pDataParse->cur_read,
                                  &recv_len, P2P_RECV_TIMEOUT);
     pDataParse->read_size = (int)recv_len;
@@ -2396,7 +2436,11 @@ static int __p2p_read_cmd(P2P_SESSION_T *pSession)
                 }
                 // Extract data portion
                 pFixedHeader = &(pReadBuff->str_header);
-                pDataParse->read_size = pFixedHeader->length;
+                if (pFixedHeader->length > (unsigned int)(sizeof(pDataParse->read_buff) - P2P_CMD_HEAD_LEN)) {
+                    PR_ERR("session[%d] payload too large[%u]", pSession->session, pFixedHeader->length);
+                    return -4;
+                }
+                pDataParse->read_size = (int)pFixedHeader->length;
                 pDataParse->cur_read = P2P_CMD_HEAD_LEN;
                 pDataParse->flag = READ_PAYLOAD_PART;
                 // PR_DEBUG("recv session[%d] cmd size[%d]",pSession->session,pDataParse->read_size);
