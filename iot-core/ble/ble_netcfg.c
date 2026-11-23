@@ -30,13 +30,13 @@ static ble_netcfg_t g_bt_netcfg_handle;
 
 extern int tuya_ble_adv_update(void);
 
-static void __handle_net_cfg(void *data, void *user_data)
+static void __handle_net_cfg(void *data, uint32_t len, void *user_data)
 {
     uint8_t result = 0;
     // resp[0] is never assigned below
     uint8_t resp[5] = {0};
 
-    cJSON *json = cJSON_Parse(data);
+    cJSON *json = cJSON_ParseWithLength((const char *)data, len);
     if (NULL == json) {
         PR_ERR(" json parse error.");
         result = (uint8_t)OPRT_CJSON_PARSE_ERR;

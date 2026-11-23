@@ -28,10 +28,17 @@ extern "C" {
 
 typedef enum {
     BLE_CHANNLE_NETCFG = 1,
-    BLE_CHANNEL_MAX,
+    BLE_CHANNEL_MAX    = 0x0010,
 } ble_channel_type_t;
 
-typedef void (*ble_channel_fn_t)(void *data, void *user_data);
+/**
+ * @brief Callback of a BLE channel.
+ *
+ * @param[in] data      the payload, it is NOT NUL terminated
+ * @param[in] len       length of @p data in bytes
+ * @param[in] user_data the private data given to @ref ble_channel_add
+ */
+typedef void (*ble_channel_fn_t)(void *data, uint32_t len, void *user_data);
 
 /**
  * @brief Adds a BLE channel.
@@ -48,6 +55,15 @@ typedef void (*ble_channel_fn_t)(void *data, void *user_data);
  */
 int ble_channel_add(ble_channel_type_t type, ble_channel_fn_t fn, void *priv_data);
 int ble_channel_del(ble_channel_type_t type);
+
+/**
+ * @brief Sends a response to the app over the large data transparent channel.
+ *
+ * @param[in] type  the uplink frame type, e.g. FRM_UPLINK_TRANSPARENT_SPEC_REQ
+ * @param[in] data  the frame, owned by this function from now on
+ * @param[in] len   length of @p data, the first two bytes are the channel type
+ */
+void ble_channle_ack(uint16_t type, uint8_t *data, uint32_t len);
 
 /**
  * @brief Processes the BLE session channel.
