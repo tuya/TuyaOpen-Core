@@ -54,6 +54,10 @@ OPERATE_RET httpc_dev_update_skill_multimedia(const char *gw_id, const char *ski
     // HTTPC_NULL_CHECK(gw_id);
     // HTTPC_NULL_CHECK(skill);
 
+    if (NULL == skill) {
+        return OPRT_INVALID_PARM;
+    }
+
     int buffer_len = 70 + strlen(skill);
     char *post_data = core_malloc(buffer_len);
     if (post_data == NULL) {
@@ -78,6 +82,10 @@ OPERATE_RET httpc_dev_update_skill_v10(const char *gw_id, const char *sub_id, co
 {
     // HTTPC_NULL_CHECK(gw_id);
     // HTTPC_NULL_CHECK(skill);
+
+    if (NULL == skill) {
+        return OPRT_INVALID_PARM;
+    }
 
     int buffer_len = 70 + strlen(skill);
     char *post_data = core_malloc(buffer_len);
@@ -322,9 +330,14 @@ void tuya_ipc_upload_skills()
         }
     }
 #endif
-    skill_buf[buf_len] = '}';
+    // room for the closing brace and the terminator the HTTP layer reads back
+    if (buf_len + 2 > SKILL_PARAM_LEN) {
+        PR_ERR("skill buf is not enough");
+        goto out;
+    }
+    skill_buf[buf_len++] = '}';
+    skill_buf[buf_len] = '\0';
     {
-
         OPERATE_RET skill_rt = http_device_update_skill(NULL, skill_buf);
 
         PR_NOTICE("skill.update rt=%d: %s", skill_rt, skill_buf);
