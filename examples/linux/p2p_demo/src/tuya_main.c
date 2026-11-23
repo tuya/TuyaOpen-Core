@@ -35,6 +35,7 @@
 #include "tuya_iot_dp.h"
 #include "tuya_lan.h"
 #include "tuya_p2p_sdk.h"
+#include "tuya_ipc_p2p_common.h"
 #include "tuya_ipc_demo.h"
 #include "reset_netcfg.h"
 #if defined(ENABLE_BLUETOOTH) && (ENABLE_BLUETOOTH == 1)
@@ -122,6 +123,12 @@ void user_event_handler_on(tuya_iot_client_t *client, tuya_event_msg_t *event)
     switch (event->id) {
     case TUYA_EVENT_BIND_START:
         PR_INFO("Device Bind Start!");
+        break;
+
+    /* Re-activation changes the device local key: refresh the P2P password
+     * before the first connection uses the cached credentials. */
+    case TUYA_EVENT_ACTIVATE_SUCCESSED:
+        tuya_ipc_p2p_passwd_sync();
         break;
 
     /* Print the QRCode for Tuya APP bind */
