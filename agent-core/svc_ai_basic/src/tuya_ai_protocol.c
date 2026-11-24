@@ -565,6 +565,7 @@ STATIC OPERATE_RET __ai_encrypt_packet(AI_SEND_PACKET_T *info, CHAR_T *data, UIN
 {
     OPERATE_RET rt = OPRT_OK;
     INT_T data_out_len = 0;
+    size_t out_len = 0;
     CHAR_T *key = __ai_get_crypt_key();
     TUYA_CHECK_NULL_RETURN(key, OPRT_COM_ERROR);
 
@@ -610,13 +611,15 @@ STATIC OPERATE_RET __ai_encrypt_packet(AI_SEND_PACKET_T *info, CHAR_T *data, UIN
             .data = (UCHAR_T *)output,
             .data_len = data_out_len
         },
-        (UCHAR_T *)output, (size_t *)en_len,
+        (UCHAR_T *)output, &out_len,
         tag, SIZEOF(tag));
         if (rt != OPRT_OK) {
             PR_ERR("aes128_gcm_encode error:%x", rt);
+            return rt;
         }
-        memcpy(output + *en_len, tag, SIZEOF(tag));
-        *en_len += SIZEOF(tag);
+        memcpy(output + out_len, tag, SIZEOF(tag));
+        out_len += SIZEOF(tag);
+        *en_len = out_len;
         // tuya_debug_hex_dump("encrypt_data", 64, (UCHAR_T *)output, *en_len);
 #endif
     } else if (sl == AI_PACKET_SL0) {
@@ -676,7 +679,7 @@ STATIC OPERATE_RET __ai_decrypt_packet(CHAR_T *data, UINT_T len, CHAR_T *output,
             .data = (UCHAR_T *)data,
             .data_len = len - AI_GCM_TAG_LEN
         },
-        (UCHAR_T *)output, (size_t *)de_len,
+        (UCHAR_T *)output, de_len,
         (UCHAR_T *)(data + len - AI_GCM_TAG_LEN), AI_GCM_TAG_LEN);
         if (rt != OPRT_OK) {
             PR_ERR("aes128_gcm_decode error:%x", rt);
@@ -777,9 +780,17 @@ STATIC OPERATE_RET __ai_pack_payload(AI_SEND_PACKET_T *info, CHAR_T *payload_buf
     AI_PROTO_D("payload len:%d, offset:%d", packet_len, offset);
 
     // tuya_debug_hex_dump("payload_uncrypt", 64, (UCHAR_T *)buf, packet_len);
-    rt = __ai_encrypt_packet(info, buf, packet_len, payload_buf, (size_t *)payload_len, sequence);
+    /* the encryptor reports a size_t; narrow it back to the UINT_T the packet
+     * header carries */
+    size_t enc_len = 0;
+    rt = __ai_encrypt_packet(info, buf, packet_len, payload_buf, &enc_len, sequence);
     if (OPRT_OK != rt) {
         PR_ERR("encrypt packet failed, rt:%d", rt);
+    } else if (enc_len > (size_t)0xFFFFFFFFu) {
+        PR_ERR("encrypted packet too long: %u", (unsigned)enc_len);
+        rt = OPRT_COM_ERROR;
+    } else {
+        *payload_len = (UINT_T)enc_len;
     }
 
     OS_FREE(buf);

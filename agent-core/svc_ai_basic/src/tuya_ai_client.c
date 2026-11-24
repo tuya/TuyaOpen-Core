@@ -604,12 +604,23 @@ STATIC BOOL_T __ai_client_restore_ca(VOID *p_ctx, CHAR_T *url)
     }
 
     UINT_T  len = 0, idx = 0;
+    size_t  ca_len = 0;
     BYTE_T *buffer = 0;
     for (idx = 0; idx < ser_cfg->domain_num; idx++) {
         if (strncmp(url, ser_cfg->domains[idx], strlen(url)) == 0) {
-            rt = core_kv_get(AI_DOMAIN_CA_KV_KEY, &buffer, (size_t *)&len);
+            /* core_kv_get() writes a size_t, which is wider than UINT_T on
+             * LP64. Hand it a real size_t and narrow afterwards, otherwise it
+             * overwrites the neighbouring stack slots. */
+            rt = core_kv_get(AI_DOMAIN_CA_KV_KEY, &buffer, &ca_len);
             if (rt == OPRT_OK) {
-                rt = tuya_tls_register_x509_crt_der(p_ctx, buffer, len);
+                /* tuya_tls_register_x509_crt_der() takes a uint32_t length */
+                if (ca_len > (size_t)0xFFFFFFFFu) {
+                    PR_ERR("ca too large: %u", (unsigned)ca_len);
+                    core_free(buffer);
+                    return FALSE;
+                }
+                len = (UINT_T)ca_len;
+                rt  = tuya_tls_register_x509_crt_der(p_ctx, buffer, len);
                 PR_DEBUG("load url %s ca to tls %d", url, rt);
                 core_free(buffer);
                 return TRUE;
