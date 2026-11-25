@@ -117,9 +117,23 @@ OPERATE_RET mqc_app_unregister_cb(uint32_t mq_pro, mqc_protocol_handler_cb handl
 OPERATE_RET mqc_send_custom_mqtt_msg(IN CONST uint32_t protocol, IN CONST uint8_t *p_data)
 {
     tuya_iot_client_t *client = tuya_iot_client_get();
-    tuya_mqtt_protocol_data_publish(&client->mqctx, protocol, p_data, strlen((const char *)p_data));
+    if (client == NULL || p_data == NULL) {
+        return OPRT_INVALID_PARM;
+    }
 
-    return OPRT_OK;
+    size_t len = strlen((const char *)p_data);
+    if (protocol > UINT16_MAX || len > UINT16_MAX) {
+        return OPRT_INVALID_PARM;
+    }
+
+    /* Report the publish result: the previous unconditional OK made every
+     * send failure surface later as a 6 s ack timeout in the caller, with no
+     * hint that the packet never left the device. */
+    OPERATE_RET rt = tuya_mqtt_protocol_data_publish(&client->mqctx, (uint16_t)protocol, p_data, (uint16_t)len);
+    if (rt != OPRT_OK) {
+        PR_ERR("mqc publish proto:%u failed:%d", protocol, rt);
+    }
+    return rt;
 }
 
 OPERATE_RET __linkage_get(IN LINKAGE_CFG_E cfg, OUT VOID *data)
