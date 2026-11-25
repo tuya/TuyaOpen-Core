@@ -5,7 +5,7 @@
 #define __TOLOWER(c) ((('A' <= (c))&&((c) <= 'Z')) ? ((c) - 'A' + 'a') : (c))
 
 
-SIZE_T tuya_strlen(const char *str)
+size_t tuya_strlen(const char *str)
 {
     return strlen(str);
 }
