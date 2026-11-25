@@ -24,4 +24,18 @@ menu "Configure System Parameters"
         int "MAX_NODE_NUM_MSG_QUEUE: Set maximum node count in message queue"
         default 100
         range 10 1000
+
+    config ENABLE_PLATFORM_NETWORK_OPS
+        bool "ENABLE_PLATFORM_NETWORK_OPS: Dispatch core_network through platform ops card"
+        default n
+        help
+            Selects how iot-core/core_system/src/core_network.c accesses the network stack:
+            - y (ON):  Dispatch all core_net_* calls through the platform ops card
+                       (core_network_ops_platform, e.g. TKL tkl_net_* on port/tuyaopen).
+                       Core does not include lwIP/POSIX socket headers directly, and
+                       platform-specific logic in tkl_network.c (such as cellular RRC
+                       power-saving timers) is preserved.
+            - n (OFF): Call the platform BSD/lwIP socket API directly via the port's
+                       core_network_platform.h (default for Linux, ESP-IDF, and
+                       lwIP-exposed MCU platforms).
 endmenu

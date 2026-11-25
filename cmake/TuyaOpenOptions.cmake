@@ -3,6 +3,12 @@
 
 option(CONFIG_ENABLE_BLUETOOTH "Build core_bluetooth and BLE cloud sources" OFF)
 option(CONFIG_ENABLE_PLATFORM_MBEDTLS "Use platform mbedTLS instead of the bundled copy" OFF)
+# Network backend for core_system/core_network.c:
+# - ON  (ENABLE_PLATFORM_NETWORK_OPS=1): dispatch core_net_* through the
+#   platform ops card (core_network_ops_platform, e.g. TKL tkl_net_* on
+#   port/tuyaopen); core does not require lwIP/POSIX socket headers.
+# - OFF (default): call POSIX/lwIP sockets directly via core_network_platform.h.
+option(CONFIG_ENABLE_PLATFORM_NETWORK_OPS "Dispatch core_network through core_network_ops_platform instead of direct sockets" OFF)
 option(CONFIG_ENABLE_DEVICE_TIMER "Include tuya_device_timer.c in tuya_cloud_service" OFF)
 option(CONFIG_ENABLE_TUYA_P2P "Build tuya_p2p subtree" OFF)
 # The P2P ICE/STUN/TURN stack is the vendored libre (baresip/re) subset; there
@@ -40,6 +46,7 @@ endif()
 foreach(_tuyaopen_opt
     CONFIG_ENABLE_BLUETOOTH
     CONFIG_ENABLE_PLATFORM_MBEDTLS
+    CONFIG_ENABLE_PLATFORM_NETWORK_OPS
     CONFIG_ENABLE_DEVICE_TIMER
     CONFIG_ENABLE_TUYA_P2P
     CONFIG_ENABLE_LOCAL_STORE
