@@ -34,12 +34,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
-#include <sys/time.h>
 
 #include "lwip/err.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "lwip/inet.h"
+#if !defined(LWIP_TIMEVAL_PRIVATE) || !LWIP_TIMEVAL_PRIVATE
+#include <sys/time.h>
+#endif
 
 /*
  * On this port fcntl() maps to lwip_fcntl(), which tests lwIP's O_NONBLOCK

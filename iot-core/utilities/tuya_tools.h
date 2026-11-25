@@ -10,6 +10,7 @@
 #ifndef __TUYA_TOOLS_H__
 #define __TUYA_TOOLS_H__
 
+#include <stddef.h>
 #include "tuya_cloud_types.h"
 
 #ifdef __cplusplus
@@ -45,7 +46,7 @@
  * 
  * @return length of string
  */
-SIZE_T tuya_strlen(const char *str);
+size_t tuya_strlen(const char *str);
 
 /**
  * @brief string copy
@@ -76,7 +77,7 @@ char *tuya_strcat(char* dst, const char* src);
  * 
  * @return 0 one equal, 1 on s1 longer than s2, -1 on s2 longer than s1
  */
-int tuya_strncasecmp(const char *s1, const char *s2, SIZE_T n);
+int tuya_strncasecmp(const char *s1, const char *s2, size_t n);
 
 /**
  * @brief compare characters of two string
