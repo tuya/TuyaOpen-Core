@@ -29,7 +29,7 @@ menu "Configure System Parameters"
         bool "ENABLE_PLATFORM_NETWORK_OPS: Dispatch core_network through platform ops card"
         default n
         help
-            Selects how iot-core/core_system/src/core_network.c accesses the network stack:
+            Selects the network backend (core_network_ops.c vs core_network.c):
             - y (ON):  Dispatch all core_net_* calls through the platform ops card
                        (core_network_ops_platform, e.g. TKL tkl_net_* on port/tuyaopen).
                        Core does not include lwIP/POSIX socket headers directly, and

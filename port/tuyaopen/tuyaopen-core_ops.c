@@ -71,7 +71,7 @@ CORE_API_OPS_T core_api_ops_platform = {
     .queue_free        = tkl_queue_free,
 };
 
-/* CORE_NETWORK_OPS_T: socket API (consumed by core_network.c when
+/* CORE_NETWORK_OPS_T: socket API (consumed by core_network_ops.c when
  * ENABLE_PLATFORM_NETWORK_OPS == 1; unused when core_network.c calls
  * POSIX/lwIP sockets directly via core_network_platform.h). */
 CORE_NETWORK_OPS_T core_network_ops_platform = {
@@ -102,14 +102,14 @@ CORE_NETWORK_OPS_T core_network_ops_platform = {
     .send_to = tkl_net_send_to,
     .recvfrom = tkl_net_recvfrom,
     .recv_nd_size = tkl_net_recv_nd_size,
-#if defined(ENABLE_TUYA_P2P) || defined(ENABLE_PLATFORM_NETWORK_OPS)
+#if defined(ENABLE_TUYA_P2P) || (defined(ENABLE_PLATFORM_NETWORK_OPS) && (ENABLE_PLATFORM_NETWORK_OPS == 1))
     .fd_clear = tkl_net_fd_clear,
     .shutdown = tkl_net_shutdown,
     .set_bufsize = tkl_net_set_bufsize,
     .getsockname = tkl_net_getsockname,
     .getpeername = tkl_net_getpeername,
 #endif
-#if defined(ENABLE_PLATFORM_NETWORK_OPS)
+#if defined(ENABLE_PLATFORM_NETWORK_OPS) && (ENABLE_PLATFORM_NETWORK_OPS == 1)
     .connect_raw = tkl_net_connect_raw,
     .getsockopt = tkl_net_getsockopt,
     .set_broadcast = tkl_net_set_broadcast,

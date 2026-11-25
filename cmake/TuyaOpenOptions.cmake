@@ -3,7 +3,7 @@
 
 option(CONFIG_ENABLE_BLUETOOTH "Build core_bluetooth and BLE cloud sources" OFF)
 option(CONFIG_ENABLE_PLATFORM_MBEDTLS "Use platform mbedTLS instead of the bundled copy" OFF)
-# Network backend for core_system/core_network.c:
+# Network backend for core_system (core_network_ops.c vs core_network.c):
 # - ON  (ENABLE_PLATFORM_NETWORK_OPS=1): dispatch core_net_* through the
 #   platform ops card (core_network_ops_platform, e.g. TKL tkl_net_* on
 #   port/tuyaopen); core does not require lwIP/POSIX socket headers.
