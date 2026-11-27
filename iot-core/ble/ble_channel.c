@@ -159,12 +159,6 @@ uint8_t ble_channel_combos_flag_get(void)
     if (ble_channel_is_registered(BLE_CHANNLE_NETCFG_STAT)) {
         flag |= (uint8_t)(1 << 1);
     }
-    if (ble_channel_is_registered(BLE_CHANNLE_DEV_LOG)) {
-        flag |= (uint8_t)(1 << 2);
-    }
-    if (ble_channel_is_registered(BLE_CHANNLE_GET_AP_NAME)) {
-        flag |= (uint8_t)(1 << 3);
-    }
 
     return flag;
 }
