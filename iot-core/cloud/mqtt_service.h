@@ -181,6 +181,7 @@ typedef struct {
      * vs. disconnect reset). Never held across mqtt_client_publish() or a
      * user callback. */
     MUTEX_HANDLE publish_mutex;
+    uint32_t publish_count;
     BackoffAlgorithmContext_t backoff_algorithm;
     uint32_t sequence_in;
     uint32_t sequence_out;

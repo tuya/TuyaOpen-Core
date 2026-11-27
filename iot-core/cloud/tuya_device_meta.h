@@ -8,6 +8,7 @@
 #ifndef __TUYA_DEVICE_META_H__
 #define __TUYA_DEVICE_META_H__
 
+#include <stdbool.h>
 #include "tuya_cloud_types.h"
 
 #ifdef __cplusplus
@@ -57,6 +58,14 @@ OPERATE_RET tuya_device_meta_add_string(const char *key, const char *value);
  * @return OPRT_OK on success, OPRT_INVALID_PARM on invalid param, OPRT_MALLOC_FAILED on alloc fail
  */
 OPERATE_RET tuya_device_meta_add_number(const char *key, int value);
+
+/**
+ * @brief Add a boolean value to device meta (local cache)
+ * @param[in] key meta key, must not be NULL
+ * @param[in] value meta boolean value
+ * @return OPRT_OK on success, OPRT_INVALID_PARM on invalid param, OPRT_MALLOC_FAILED on alloc fail
+ */
+OPERATE_RET tuya_device_meta_add_bool(const char *key, bool value);
 
 /**
  * @brief Report device meta to cloud and clear local cache on completion

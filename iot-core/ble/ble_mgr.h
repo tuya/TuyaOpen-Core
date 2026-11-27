@@ -78,6 +78,20 @@ int tuya_ble_deinit(void);
 bool tuya_ble_is_connected(void);
 
 /**
+ * @brief Checks whether a BLE peer is currently paired.
+ *
+ * @return true if the BLE manager is initialized and paired, false otherwise.
+ */
+bool tuya_ble_is_paired(void);
+
+/**
+ * @brief Updates the BLE advertising payload with current capability flags.
+ *
+ * @return OPRT_OK on success.
+ */
+int tuya_ble_adv_update(void);
+
+/**
  * @brief Sends data over the BLE connection.
  *
  * This function is used to send data over the BLE connection established by the

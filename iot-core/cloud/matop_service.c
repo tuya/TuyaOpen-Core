@@ -168,13 +168,12 @@ static void on_matop_service_file_rawdata_receive(uint16_t msgid, const mqtt_cli
 
 static int matop_request_send(matop_context_t *context, const uint8_t *data, size_t datalen)
 {
-    uint16_t msgid =
-        mqtt_client_publish(context->config.mqctx->mqtt_client, context->resquest_topic, data, datalen, MQTT_QOS_0);
+    int rt = tuya_mqtt_client_publish_common(context->config.mqctx, context->resquest_topic, data, datalen, NULL, NULL,
+                                             0, false);
 
-    if (msgid <= 0) {
-        // TODO add error code
-        PR_ERR("mqtt connect err:%d", msgid);
-        return OPRT_COM_ERROR;
+    if (OPRT_OK != rt) {
+        PR_ERR("mqtt publish err:%d", rt);
+        return rt;
     }
     return OPRT_OK;
 }
