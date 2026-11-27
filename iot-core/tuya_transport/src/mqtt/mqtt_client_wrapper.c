@@ -611,10 +611,8 @@ mqtt_client_status_t mqtt_client_connect(void *client)
     return MQTT_STATUS_SUCCESS;
 }
 
-mqtt_client_status_t mqtt_client_disconnect(void *client)
+static mqtt_client_status_t __mqtt_client_disconnect(mqtt_client_context_t *context, bool send_disc_pkt)
 {
-    mqtt_client_context_t *context = (mqtt_client_context_t *)client;
-
     if (context == NULL || !__client_ref(context)) {
         return MQTT_STATUS_INVALID_PARAM;
     }
@@ -627,7 +625,8 @@ mqtt_client_status_t mqtt_client_disconnect(void *client)
     uint64_t t0 = core_system_get_millisecond();
 
     __conn_lock();
-    if (__link_state_get(context) == MQTT_LINK_DEAD) {
+    int prev_state = __link_state_get(context);
+    if (prev_state == MQTT_LINK_DEAD || prev_state == MQTT_LINK_DISCONNECTED) {
         __conn_unlock();
         __client_unref(context);
         return MQTT_STATUS_SUCCESS;
@@ -636,20 +635,19 @@ mqtt_client_status_t mqtt_client_disconnect(void *client)
      * CONNECTING here: an external caller waits on conn_lock. Closing the
      * transport mid-handshake would corrupt it, so ignore the request; the
      * connect path will settle the state. */
-    if (__link_state_get(context) == MQTT_LINK_CONNECTING) {
+    if (prev_state == MQTT_LINK_CONNECTING) {
         log_error("mqtt disconnect during connect ignored (re-entry)");
         __conn_unlock();
         __client_unref(context);
         return MQTT_STATUS_SUCCESS;
     }
 
-    /* Sending DISCONNECT is a courtesy, not a requirement. If the socket is
-     * not writable right now (peer gone, send buffer full, link already
-     * failing), MQTT_Disconnect would sit in sendBuffer/SO_SNDTIMEO for
-     * seconds while holding both locks. Skip it and just close.
-     * timeout_ms must be >= 1: core_net_select(0) means "wait forever". */
+    /* Sending DISCONNECT is a courtesy, not a requirement. Skip it when the
+     * caller already detected a broken transport, or when the socket is not
+     * writable right now (timeout_ms must be >= 1: core_net_select(0) waits
+     * forever). */
     bool send_disconnect = false;
-    if ((__link_state_get(context) == MQTT_LINK_CONNECTED) && (context->network != NULL)) {
+    if (send_disc_pkt && (prev_state == MQTT_LINK_CONNECTED) && (context->network != NULL)) {
         int writable = tuya_transporter_poll_write(context->network, 1);
         send_disconnect = (writable > 0);
         if (!send_disconnect) {
@@ -664,7 +662,7 @@ mqtt_client_status_t mqtt_client_disconnect(void *client)
     if (send_disconnect) {
         mqtt_status = MQTT_Disconnect(&context->mqclient);
         if (MQTTSuccess != mqtt_status) {
-            log_error("mqtt disconnect err: %s(%d)", MQTT_Status_strerror(mqtt_status), mqtt_status);
+            PR_DEBUG("mqtt disconnect pkt skipped/failed: %s(%d)", MQTT_Status_strerror(mqtt_status), mqtt_status);
         }
     }
     __mqtt_unlock();
@@ -683,6 +681,11 @@ mqtt_client_status_t mqtt_client_disconnect(void *client)
     __client_unref(context);
 
     return MQTT_STATUS_SUCCESS;
+}
+
+mqtt_client_status_t mqtt_client_disconnect(void *client)
+{
+    return __mqtt_client_disconnect((mqtt_client_context_t *)client, true);
 }
 
 uint16_t mqtt_client_subscribe(void *client, const char *topic, uint8_t qos)
@@ -750,7 +753,7 @@ uint16_t mqtt_client_unsubscribe(void *client, const char *topic, uint8_t qos)
         &(const MQTTSubscribeInfo_t){.qos = qos, .pTopicFilter = topic, .topicFilterLength = strlen(topic)}, 1, msgid);
 
     if (mqtt_status != MQTTSuccess) {
-        log_error("Failed to send SUBSCRIBE packet to broker with error = %s.", MQTT_Status_strerror(mqtt_status));
+        log_error("Failed to send UNSUBSCRIBE packet to broker with error = %s.", MQTT_Status_strerror(mqtt_status));
         __mqtt_unlock();
         __client_unref(context);
         return 0;
@@ -898,7 +901,7 @@ mqtt_client_status_t mqtt_client_yield(void *client)
         }
         if (ready < 0) {
             log_error("mqtt idle poll failed: %d", ready);
-            (void)mqtt_client_disconnect(context);
+            (void)__mqtt_client_disconnect(context, false);
             __client_unref(context);
             return MQTT_STATUS_NETWORK_TIMEOUT;
         }
@@ -931,7 +934,7 @@ mqtt_client_status_t mqtt_client_yield(void *client)
      * receiveSingleIteration; kept here for clarity/older cores.) */
     if (mqtt_status != MQTTSuccess && mqtt_status != MQTTNoDataAvailable && mqtt_status != MQTTNeedMoreBytes) {
         log_error("MQTT_ProcessLoop returned with status = %s.", MQTT_Status_strerror(mqtt_status));
-        (void)mqtt_client_disconnect(context);
+        (void)__mqtt_client_disconnect(context, false);
         __client_unref(context);
         return MQTT_STATUS_NETWORK_TIMEOUT;
     }

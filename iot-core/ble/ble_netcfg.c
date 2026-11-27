@@ -27,6 +27,12 @@ typedef struct {
 } ble_netcfg_t;
 
 static ble_netcfg_t g_bt_netcfg_handle;
+static ble_netcfg_parse_cb_t s_ble_netcfg_parse_cb = NULL;
+
+void ble_netcfg_parse_cb_register(ble_netcfg_parse_cb_t cb)
+{
+    s_ble_netcfg_parse_cb = cb;
+}
 
 extern int tuya_ble_adv_update(void);
 
@@ -84,14 +90,16 @@ static void __handle_net_cfg(void *data, uint32_t len, void *user_data)
     g_bt_netcfg_handle.info.ssid[s_len] = '\0';
     g_bt_netcfg_handle.info.s_len = (uint8_t)s_len;
 
-    // Copy password
+    // Copy password (empty password allowed for open WiFi networks)
     size_t p_len = strnlen(passwd, WIFI_PASSWD_LEN + 1);
-    if (p_len == 0 || p_len > WIFI_PASSWD_LEN) {
+    if (p_len > WIFI_PASSWD_LEN) {
         PR_ERR("passwd len invalid:%zu", p_len);
         result = (uint8_t)OPRT_CJSON_GET_ERR;
         goto __exit;
     }
-    memcpy(g_bt_netcfg_handle.info.passwd, passwd, p_len);
+    if (p_len > 0) {
+        memcpy(g_bt_netcfg_handle.info.passwd, passwd, p_len);
+    }
     g_bt_netcfg_handle.info.passwd[p_len] = '\0';
     g_bt_netcfg_handle.info.p_len = (uint8_t)p_len;
 
@@ -105,6 +113,9 @@ static void __handle_net_cfg(void *data, uint32_t len, void *user_data)
     memcpy(g_bt_netcfg_handle.info.token, token, t_len);
     g_bt_netcfg_handle.info.token[t_len] = '\0';
     g_bt_netcfg_handle.info.t_len = (uint8_t)t_len;
+    if (s_ble_netcfg_parse_cb != NULL) {
+        s_ble_netcfg_parse_cb(true);
+    }
     g_bt_netcfg_handle.finish_cb(&g_bt_netcfg_handle.info);
 
     cJSON *reg = cJSON_GetObjectItem(json, "reg");
@@ -113,6 +124,9 @@ static void __handle_net_cfg(void *data, uint32_t len, void *user_data)
     }
 
 __exit:
+    if (result != 0 && s_ble_netcfg_parse_cb != NULL) {
+        s_ble_netcfg_parse_cb(false);
+    }
     if (json) {
         cJSON_Delete(json);
     }

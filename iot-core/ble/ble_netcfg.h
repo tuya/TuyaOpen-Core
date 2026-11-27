@@ -62,6 +62,13 @@ typedef struct {
 typedef int (*ble_netcfg_finish_cb_t)(ble_netcfg_info_t *info);
 
 /**
+ * @brief Optional hook invoked when a BLE netcfg (0x0001) payload is parsed.
+ *
+ * @param[in] ok true if ssid/passwd/token parsed successfully, false on packet error.
+ */
+typedef void (*ble_netcfg_parse_cb_t)(bool ok);
+
+/**
  * @brief Start BLE network configuration: register the channel and refresh
  *        advertising
  *
@@ -79,6 +86,11 @@ int ble_netcfg_start(ble_netcfg_finish_cb_t cb);
  * tuya_error_code.h
  */
 int ble_netcfg_stop(void);
+
+/**
+ * @brief Registers an optional observer for BLE netcfg (0x0001) packet parse results.
+ */
+void ble_netcfg_parse_cb_register(ble_netcfg_parse_cb_t cb);
 
 #ifdef __cplusplus
 }

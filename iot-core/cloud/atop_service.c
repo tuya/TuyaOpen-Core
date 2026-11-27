@@ -31,7 +31,23 @@
 
 #define CAD_VER       "1.0.3"
 #define CD_VER        "1.0.0"
-#define ATTRIBUTE_OTA (11)
+#define ATTRIBUTE_OTA ATOP_DEV_ATTR_OTA
+
+static uint32_t s_dev_attr_mask = (1U << ATTRIBUTE_OTA);
+
+void atop_service_dev_attribute_set(uint32_t attr_bit)
+{
+    if (attr_bit < 32U) {
+        __atomic_fetch_or(&s_dev_attr_mask, (1U << attr_bit), __ATOMIC_RELEASE);
+    }
+}
+
+void atop_service_dev_attribute_clear(uint32_t attr_bit)
+{
+    if (attr_bit < 32U) {
+        __atomic_fetch_and(&s_dev_attr_mask, ~(1U << attr_bit), __ATOMIC_RELEASE);
+    }
+}
 
 /**
  * @brief Sends an activate request to the ATOP service.
@@ -189,8 +205,9 @@ int atop_service_activate_request(const tuya_activite_request_t *request, atop_b
         remain = prealloc_size - offset;
     }
 
-    /* default support device OTA */
-    write_len = snprintf(buffer + offset, remain, ",\"devAttribute\":%u", 1 << ATTRIBUTE_OTA);
+    /* default support device OTA plus any feature bits registered at runtime */
+    uint32_t dev_attr = __atomic_load_n(&s_dev_attr_mask, __ATOMIC_ACQUIRE);
+    write_len = snprintf(buffer + offset, remain, ",\"devAttribute\":%u", (unsigned int)dev_attr);
     if (write_len < 0 || (size_t)write_len >= remain) {
         core_free(buffer);
         return OPRT_BUFFER_NOT_ENOUGH;

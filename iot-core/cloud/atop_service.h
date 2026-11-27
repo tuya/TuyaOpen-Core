@@ -20,6 +20,7 @@
 #ifndef __ATOP_SERVICE_H_
 #define __ATOP_SERVICE_H_
 
+#include <stdint.h>
 #include "atop_base.h"
 
 #ifdef __cplusplus
@@ -47,6 +48,24 @@ typedef enum {
     HTTP_DYNAMIC_CFG_TZ,       // time zone
     HTTP_DYNAMIC_CFG_RATERULE, // rate rule for dp
 } HTTP_DYNAMIC_CFG_TYPE;
+
+/* Device capability attribute bits reported in devAttribute during activation. */
+#define ATOP_DEV_ATTR_OTA          (11U)
+#define ATOP_DEV_ATTR_WIFI_PROTECT (12U)
+
+/**
+ * @brief Enables a capability bit in the activation devAttribute bitmask.
+ *
+ * @param attr_bit Bit position (0..31), e.g. ATOP_DEV_ATTR_WIFI_PROTECT.
+ */
+void atop_service_dev_attribute_set(uint32_t attr_bit);
+
+/**
+ * @brief Clears a capability bit in the activation devAttribute bitmask.
+ *
+ * @param attr_bit Bit position (0..31).
+ */
+void atop_service_dev_attribute_clear(uint32_t attr_bit);
 
 typedef enum {
     DEV_STATUS_UNKNOWN,
