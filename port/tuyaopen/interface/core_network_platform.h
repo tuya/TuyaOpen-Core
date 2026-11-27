@@ -102,6 +102,12 @@ static inline int core_net_platform_bind_interface(int fd, TUYA_IP_ADDR_T addr)
     return ret;
 }
 
+static inline int core_net_platform_set_timeout(int fd, int optname, int ms_timeout)
+{
+    struct timeval timeout = {ms_timeout / 1000, (ms_timeout % 1000) * 1000};
+    return setsockopt(fd, SOL_SOCKET, optname, (const char *)&timeout, sizeof(timeout));
+}
+
 #else
 
 /* lwIP has no SO_BINDTODEVICE equivalent */
@@ -111,6 +117,32 @@ static inline int core_net_platform_bind_interface(int fd, TUYA_IP_ADDR_T addr)
     (void)addr;
 
     return 0;
+}
+
+/*
+ * lwIP takes an int (ms) for SO_RCVTIMEO/SO_SNDTIMEO when built with
+ * LWIP_SO_SNDRCVTIMEO_NONSTANDARD=1, and a struct timeval otherwise.
+ * LWIP_SO_SNDRCVTIMEO_NONSTANDARD (or an explicit CORE_NET_SO_TIMEOUT_MS_INT
+ * build override for platforms whose minimal lwipopts.h view differs from
+ * the linked library) must match the lwIP archive actually linked.
+ */
+#if defined(CORE_NET_SO_TIMEOUT_MS_INT)
+#define CORE_NET_PLATFORM_SO_TIMEOUT_MS_INT CORE_NET_SO_TIMEOUT_MS_INT
+#elif defined(LWIP_SO_SNDRCVTIMEO_NONSTANDARD) && LWIP_SO_SNDRCVTIMEO_NONSTANDARD
+#define CORE_NET_PLATFORM_SO_TIMEOUT_MS_INT 1
+#else
+#define CORE_NET_PLATFORM_SO_TIMEOUT_MS_INT 0
+#endif
+
+static inline int core_net_platform_set_timeout(int fd, int optname, int ms_timeout)
+{
+#if CORE_NET_PLATFORM_SO_TIMEOUT_MS_INT
+    int timeout = ms_timeout;
+    return setsockopt(fd, SOL_SOCKET, optname, (const char *)&timeout, sizeof(timeout));
+#else
+    struct timeval timeout = {ms_timeout / 1000, (ms_timeout % 1000) * 1000};
+    return setsockopt(fd, SOL_SOCKET, optname, (const char *)&timeout, sizeof(timeout));
+#endif
 }
 
 #endif

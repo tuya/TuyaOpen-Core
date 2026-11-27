@@ -338,7 +338,9 @@ TUYA_ERRNO core_net_recvfrom(const int fd, void *buf, const uint32_t nbytes, TUY
  * @param[in] ms_timeout: timeout in ms
  * @param[in] type: transfer type, receive or send
  *
- * @note This API is used for setting timeout option of socket fd.
+ * @note This API is used for setting timeout option of socket fd. The
+ * underlying option payload format (POSIX struct timeval or ms int) is selected
+ * by the port's core_network_platform.h to match the linked stack.
  *
  * @return OPRT_OK on success. Others on error, please refer to
  * tuya_error_code.h
@@ -419,10 +421,11 @@ OPERATE_RET core_net_gethostbyname(const char *domain, TUYA_IP_ADDR_T *addr);
  * @param[in] cnt: keep count option, probe count.
  *
  * @note This API is used to set keepalive option of socket fd to monitor the
- * connection.
+ * connection. Keepalive is treated as best effort when the underlying stack
+ * rejects keepalive options with ENOPROTOOPT.
  *
- * @return OPRT_OK on success. Others on error, please refer to
- * tuya_error_code.h
+ * @return OPRT_OK on success or when keepalive options are unsupported
+ * (ENOPROTOOPT). Others on error, please refer to tuya_error_code.h
  */
 OPERATE_RET core_net_set_keepalive(int fd, const BOOL_T alive, const uint32_t idle, const uint32_t intr,
                                   const uint32_t cnt);

@@ -705,7 +705,8 @@ OPERATE_RET core_net_getsockopt(const int fd, const TUYA_OPT_LEVEL level, const 
  * @param[in] ms_timeout: timeout in ms
  * @param[in] type: transfer type, receive or send
  *
- * @note This API is used for setting timeout option of socket fd.
+ * @note This API is used for setting timeout option of socket fd. The
+ * underlying option payload format is handled by core_net_platform_set_timeout().
  *
  * @return OPRT_OK on success. Others on error, please refer to
  * tuya_error_code.h
@@ -716,10 +717,9 @@ OPERATE_RET core_net_set_timeout(const int fd, const int ms_timeout, const TUYA_
         return -3000 + fd;
     }
 
-    struct timeval timeout = {ms_timeout / 1000, (ms_timeout % 1000) * 1000};
     int optname = ((type == TRANS_RECV) ? SO_RCVTIMEO : SO_SNDTIMEO);
 
-    return core_net_setsockopt(fd, SOL_SOCKET, optname, (const char *)&timeout, sizeof(timeout));
+    return core_net_platform_set_timeout(fd, optname, ms_timeout);
 }
 
 /**
@@ -841,6 +841,34 @@ OPERATE_RET core_net_gethostbyname(const char *domain, TUYA_IP_ADDR_T *addr)
 }
 
 /**
+ * @brief Apply a single keepalive-related socket option on a best-effort basis.
+ *
+ * Prebuilt lwIP stacks compiled without LWIP_TCP_KEEPALIVE define
+ * TCP_KEEPIDLE/TCP_KEEPINTVL/TCP_KEEPCNT in headers yet reject them (and in
+ * some vendor builds SO_KEEPALIVE itself) with ENOPROTOOPT at runtime.
+ *
+ * Note: this relies on core_net_get_errno() observing the errno written by
+ * the underlying socket stack.
+ */
+static OPERATE_RET __core_net_set_keepalive_opt(int fd, TUYA_OPT_LEVEL level, TUYA_OPT_NAME optname, int val,
+                                                BOOL_T *unsupported)
+{
+    OPERATE_RET ret = core_net_setsockopt(fd, level, optname, (const void *)&val, sizeof(val));
+    if (unsupported != NULL) {
+        *unsupported = FALSE;
+    }
+    if (ret != OPRT_OK && core_net_get_errno() == UNW_ENOPROTOOPT) {
+        PR_WARN("keepalive opt(%d:%d) unsupported (ENOPROTOOPT); left to the stack", level, optname);
+        if (unsupported != NULL) {
+            *unsupported = TRUE;
+        }
+        return OPRT_OK;
+    }
+
+    return ret;
+}
+
+/**
  * @brief Set keepalive option of socket fd to monitor the connection
  *
  * @param[in] fd: file descriptor
@@ -851,10 +879,11 @@ OPERATE_RET core_net_gethostbyname(const char *domain, TUYA_IP_ADDR_T *addr)
  * @param[in] cnt: keep count option, probe count.
  *
  * @note This API is used to set keepalive option of socket fd to monitor the
- * connection.
+ * connection. Keepalive is treated as best effort when the underlying stack
+ * rejects keepalive options with ENOPROTOOPT.
  *
- * @return OPRT_OK on success. Others on error, please refer to
- * tuya_error_code.h
+ * @return OPRT_OK on success or when keepalive options are unsupported
+ * (ENOPROTOOPT). Others on error, please refer to tuya_error_code.h
  */
 OPERATE_RET core_net_set_keepalive(int fd, const BOOL_T alive, const uint32_t idle, const uint32_t intr,
                                   const uint32_t cnt)
@@ -863,18 +892,23 @@ OPERATE_RET core_net_set_keepalive(int fd, const BOOL_T alive, const uint32_t id
         return -3000 + fd;
     }
 
-    int keepalive = alive;
-    int keepidle = idle;
-    int keepinterval = intr;
-    int keepcount = cnt;
-    int ret = 0;
+    BOOL_T unsupported = FALSE;
+    OPERATE_RET ret = __core_net_set_keepalive_opt(fd, SOL_SOCKET, SO_KEEPALIVE, alive ? 1 : 0, &unsupported);
+    if (ret != OPRT_OK || !alive || unsupported) {
+        return ret;
+    }
 
-    ret |= core_net_setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (void *)&keepalive, sizeof(keepalive));
-    ret |= core_net_setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (void *)&keepidle, sizeof(keepidle));
-    ret |= core_net_setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (void *)&keepinterval, sizeof(keepinterval));
-    ret |= core_net_setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (void *)&keepcount, sizeof(keepcount));
+    ret = __core_net_set_keepalive_opt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (int)idle, NULL);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
 
-    return ret;
+    ret = __core_net_set_keepalive_opt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (int)intr, NULL);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    return __core_net_set_keepalive_opt(fd, IPPROTO_TCP, TCP_KEEPCNT, (int)cnt, NULL);
 }
 
 /**
