@@ -901,7 +901,7 @@ mqtt_client_status_t mqtt_client_yield(void *client)
         }
         if (ready < 0) {
             log_error("mqtt idle poll failed: %d", ready);
-            (void)mqtt_client_disconnect(context);
+            (void)__mqtt_client_disconnect(context, false);
             __client_unref(context);
             return MQTT_STATUS_NETWORK_TIMEOUT;
         }

@@ -582,6 +582,9 @@ int tuya_mqtt_start(tuya_mqtt_context_t *context)
     //! TODO: rand
     if (MQTT_STATUS_SUCCESS != mqtt_status) {
         PR_ERR("MQTT connect fail:%d", mqtt_status);
+        if (MQTT_MANUAL_DISC(context) || MQTT_IS_INITED(context) == false) {
+            return OPRT_COM_ERROR;
+        }
         /* Generate a random number and get back-off value (in milliseconds) for
          * the next connection retry. */
         uint16_t nextRetryBackOff = 0U;
@@ -590,7 +593,12 @@ int tuya_mqtt_start(tuya_mqtt_context_t *context)
             PR_WARN("Connection to the MQTT server failed. Retrying "
                     "connection after %hu ms backoff.",
                     (unsigned short)nextRetryBackOff);
-            core_system_sleep(nextRetryBackOff + 10000);
+            uint32_t remaining = nextRetryBackOff;
+            while (remaining > 0 && !MQTT_MANUAL_DISC(context) && MQTT_IS_INITED(context)) {
+                uint32_t slice = (remaining > 200U) ? 200U : remaining;
+                core_system_sleep(slice);
+                remaining -= slice;
+            }
         }
         return OPRT_COM_ERROR;
     }
