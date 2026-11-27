@@ -282,11 +282,13 @@ void ble_session_channel_process(ble_packet_t *req, void *user_data)
             static uint32_t totalLen = 0; // all subpackets data length
             static uint8_t *pBuffer = NULL;
             static uint32_t receivedLen = 0; // already received subpackets data length
+            static uint32_t expectedSubpacketNo = 1;
 
             if (pRawData[2] == 0) { // first subpacket
                 offset = 3;         // skip flag and first subpacket no, total 3B
                 totalLen = 0;
                 receivedLen = 0;
+                expectedSubpacketNo = 1;
                 offset += __extract_packet_len(pRawData + offset, pRawLen - offset,
                                                &totalLen); // parse all subpackets data length
                 PR_DEBUG("first downlink subpacket, totalLen:%u", totalLen);
@@ -332,9 +334,14 @@ void ble_session_channel_process(ble_packet_t *req, void *user_data)
                     PR_ERR("ble channel subpacket len err:%u/%u", pRawLen, totalLen);
                     return;
                 }
+                if (curSubpacketNo != expectedSubpacketNo) {
+                    PR_ERR("ble channel subpacket no err:%u/%u", curSubpacketNo, expectedSubpacketNo);
+                    return;
+                }
                 curSubpacketLen = pRawLen - offset;
                 memcpy(pBuffer + receivedLen, pRawData + offset, curSubpacketLen);
                 receivedLen += curSubpacketLen;
+                expectedSubpacketNo++;
             }
 
             PR_DEBUG("rece downlink subpacket, curSubpacketNo:%u, "

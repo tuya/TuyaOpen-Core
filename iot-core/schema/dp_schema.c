@@ -18,6 +18,7 @@
 #include "tuya_cloud_types.h"
 #include "dp_schema.h"
 #include "cJSON.h"
+#include "mbedtls/base64.h"
 #include "mix_method.h"
 #include "core_api.h"
 
@@ -401,7 +402,12 @@ int dp_data_recv_parse(dp_recv_msg_t *msg, dp_recv_cb_t dp_recv_cb)
         }
         if (T_RAW == dpnode->desc.type && cJSON_String == item->type) { // raw dp process
             // dp_raw_t
-            int data_len = sizeof(dp_raw_recv_t) + strlen(item->valuestring);
+            if (NULL == item->valuestring) {
+                continue;
+            }
+            size_t encoded_len = strlen(item->valuestring);
+            size_t decoded_max_len = encoded_len * 3 / 4 + 1;
+            size_t data_len = sizeof(dp_raw_recv_t) + decoded_max_len;
             dp_raw_recv_t *dpraw = core_malloc(data_len);
             if (NULL == dpraw) {
                 core_mutex_unlock(schema->mutex);
@@ -409,11 +415,20 @@ int dp_data_recv_parse(dp_recv_msg_t *msg, dp_recv_cb_t dp_recv_cb)
             }
             memset(dpraw, 0, data_len);
 
+            size_t decoded_len = 0;
+            if (mbedtls_base64_decode(dpraw->dp.data, decoded_max_len, &decoded_len,
+                                      (const unsigned char *)item->valuestring, encoded_len) != 0 ||
+                decoded_len > UINT16_MAX) {
+                PR_ERR("raw dp base64 decode err");
+                core_free(dpraw);
+                continue;
+            }
+
             dpraw->devid = msg->devid;
             dpraw->cmd_tp = msg->cmd;
             dpraw->dp.id = dpnode->desc.id;
             dpraw->dtt_tp = msg->dt_tp;
-            dpraw->dp.len = tuya_base64_decode(item->valuestring, dpraw->dp.data);
+            dpraw->dp.len = (uint16_t)decoded_len;
 
             if (dp_recv_cb) {
                 core_mutex_unlock(schema->mutex);
