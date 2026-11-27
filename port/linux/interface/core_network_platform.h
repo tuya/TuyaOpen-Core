@@ -94,4 +94,15 @@ static inline int core_net_platform_bind_interface(int fd, TUYA_IP_ADDR_T addr)
     return ret;
 }
 
+/**
+ * @brief Apply SO_RCVTIMEO or SO_SNDTIMEO using POSIX struct timeval
+ *
+ * @return setsockopt() result (0 on success, -1 on error with errno set)
+ */
+static inline int core_net_platform_set_timeout(int fd, int optname, int ms_timeout)
+{
+    struct timeval timeout = {ms_timeout / 1000, (ms_timeout % 1000) * 1000};
+    return setsockopt(fd, SOL_SOCKET, optname, (const char *)&timeout, sizeof(timeout));
+}
+
 #endif /* __CORE_NETWORK_PLATFORM_H__ */

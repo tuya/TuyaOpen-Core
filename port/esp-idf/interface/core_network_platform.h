@@ -49,4 +49,20 @@ static inline int core_net_platform_bind_interface(int fd, TUYA_IP_ADDR_T addr)
     return 0;
 }
 
+/**
+ * @brief Apply SO_RCVTIMEO or SO_SNDTIMEO using the stack's native option type
+ *
+ * @return setsockopt() result (0 on success, negative on error)
+ */
+static inline int core_net_platform_set_timeout(int fd, int optname, int ms_timeout)
+{
+#if defined(LWIP_SO_SNDRCVTIMEO_NONSTANDARD) && LWIP_SO_SNDRCVTIMEO_NONSTANDARD
+    int timeout = ms_timeout;
+    return setsockopt(fd, SOL_SOCKET, optname, (const char *)&timeout, sizeof(timeout));
+#else
+    struct timeval timeout = {ms_timeout / 1000, (ms_timeout % 1000) * 1000};
+    return setsockopt(fd, SOL_SOCKET, optname, (const char *)&timeout, sizeof(timeout));
+#endif
+}
+
 #endif /* __CORE_NETWORK_PLATFORM_H__ */
